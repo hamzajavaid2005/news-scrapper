@@ -3,6 +3,8 @@ import { RSSDiscovery } from '../discovery.js';
 import { scrapeNewsArticle } from '../scraper.js';
 import { prisma, connectDB } from '../prisma.js';
 
+const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
+
 /**
  * Scheduled news scraping function
  * Runs every 10 minutes with retry logic
@@ -10,7 +12,8 @@ import { prisma, connectDB } from '../prisma.js';
 export const scrapeNewsCycle = inngest.createFunction(
   { 
     id: "scrape-news-cycle",
-    retries: 3  // Retry failed steps up to 3 times
+    retries: 3,  // Retry failed steps up to 3 times
+    concurrency: 1 // STRICTLY ONE AT A TIME
   },
   { cron: "*/10 * * * *" },  // Every 10 minutes
   async ({ step, logger }) => {
@@ -43,7 +46,7 @@ export const scrapeNewsCycle = inngest.createFunction(
     
     for (const source of sources) {
       const items = await step.run(`discover-${source.name}`, async () => {
-        logger.info(`Discovering: ${source.name}`);
+        logger.info(`[${getTimestamp()}] Discovering: ${source.name}`);
         
         try {
           const feed = await rss.fetchFeed(source.feedUrl);
@@ -130,7 +133,7 @@ export const scrapeNewsCycle = inngest.createFunction(
       const item = allItems[i];
       
       const result = await step.run(`scrape-article-${i}`, async () => {
-        logger.info(`[${i + 1}/${allItems.length}] Scraping: ${item.title?.substring(0, 40)}...`);
+        // Log removed to reduce noise
         
         try {
           const articleData = await scrapeNewsArticle(item.link);
@@ -153,11 +156,17 @@ export const scrapeNewsCycle = inngest.createFunction(
             data: { totalArticles: { increment: 1 } }
           });
 
-          logger.info(`✓ Scraped: ${item.title?.substring(0, 40)} (${articleData.textContent?.length || 0} chars)`);
+          const remaining = allItems.length - (i + 1);
+          logger.info(`✓ [${getTimestamp()}] [${item.sourceName}] Scraped: ${item.title?.substring(0, 30)}... [${remaining} remaining]`);
           return { success: true, url: item.link, chars: articleData.textContent?.length || 0 };
 
         } catch (error) {
-          logger.error(`✗ Failed: ${item.title?.substring(0, 40)} - ${error.message}`);
+          const remaining = allItems.length - (i + 1);
+          const isBlocked = error.message.includes('403') || error.message.includes('Forbidden');
+          const errorMsg = isBlocked ? 'Blocked (403)' : error.message;
+          const logType = isBlocked ? 'warn' : 'error';
+          
+          logger[logType](`✗ [${getTimestamp()}] [${item.sourceName}] ${errorMsg}: ${item.title?.substring(0, 30)}... [${remaining} remaining]`);
           
           await prisma.article.update({
             where: { url: item.link },
@@ -176,7 +185,7 @@ export const scrapeNewsCycle = inngest.createFunction(
 
       // 5-second delay between articles (except last one)
       if (i < allItems.length - 1) {
-        await step.sleep("delay-between-articles", "5s");
+        await step.sleep(`delay-between-articles-${i}`, "5s");
       }
     }
 
