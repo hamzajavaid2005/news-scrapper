@@ -1,0 +1,38 @@
+{
+  "name": "news-scrapper",
+  "version": "1.0.0",
+  "description": "News article scraper using Puppeteer and Mozilla Readability with MongoDB",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "news-scraper": "./src/cli.js"
+  },
+  "scripts": {
+    "server": "node src/server.js",
+    "inngest": "npx inngest-cli@latest dev -u http://localhost:3000/api/inngest",
+    "cli": "node src/cli.js",
+    "setup": "node src/cli.js setup-defaults",
+    "run": "node src/cli.js run",
+    "start": "node src/cli.js start",
+    "stats": "node src/cli.js stats",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "news",
+    "scraper",
+    "puppeteer",
+    "readability",
+    "mongodb"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.14.0",
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "express": "^5.2.1",
+    "inngest": "^3.50.0",
+    "jsdom": "^27.4.0",
+    "mongoose": "^9.1.5",
+    "rss-parser": "^3.13.0"
+  }
+}
