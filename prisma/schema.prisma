@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Source {
+  id            String    @id @default(uuid())
+  name          String
+  feedUrl       String    @unique
+  baseUrl       String?
+  active        Boolean   @default(true)
+  lastCheckedAt DateTime?
+  totalArticles Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  articles      Article[]
+
+  @@map("sources")
+}
+
+model Article {
+  id           String    @id @default(uuid())
+  url          String    @unique
+  sourceId     String
+  source       Source    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  title        String?
+  textContent  String?
+  excerpt      String?
+  byline       String?
+  siteName     String?
+  status       String    @default("pending")
+  errorMessage String?
+  discoveredAt DateTime  @default(now())
+  scrapedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status])
+  @@index([sourceId])
+  @@map("articles")
+}

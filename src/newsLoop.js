@@ -1,6 +1,6 @@
 import { RSSDiscovery } from './discovery.js';
 import { scrapeNewsArticle } from './scraper.js';
-import { Article, Source, connectDB, disconnectDB } from './db/index.js';
+import { prisma, connectDB, disconnectDB } from './prisma.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -8,10 +8,10 @@ import path from 'path';
 const PID_FILE = path.join(process.cwd(), '.news-loop.pid');
 
 /**
- * The News Loop Controller (RSS-based)
+ * The News Loop Controller (RSS-based with Prisma/Supabase)
  * 
  * Uses RSS feeds for discovery (lightweight, no browser needed)
- * Uses Puppeteer + Readability only for extracting full article content
+ * Uses fetch + Readability for extracting full article content
  */
 export class NewsLoop {
   constructor(options = {}) {
@@ -25,14 +25,15 @@ export class NewsLoop {
    * Add a new RSS feed source
    */
   async addSource(config) {
-    const source = new Source({
-      name: config.name,
-      feedUrl: config.feedUrl,
-      baseUrl: config.baseUrl || new URL(config.feedUrl).origin,
-      active: true
+    const source = await prisma.source.create({
+      data: {
+        name: config.name,
+        feedUrl: config.feedUrl,
+        baseUrl: config.baseUrl || new URL(config.feedUrl).origin,
+        active: true
+      }
     });
 
-    await source.save();
     console.log(`✓ Added source: ${config.name}`);
     console.log(`  Feed: ${config.feedUrl}`);
     return source;
@@ -63,21 +64,36 @@ export class NewsLoop {
    * Remove a source
    */
   async removeSource(nameOrId) {
-    const source = await Source.findOneAndDelete({
-      $or: [{ _id: nameOrId }, { name: nameOrId }]
-    });
-    if (source) {
-      console.log(`✓ Removed source: ${source.name}`);
-      return true;
+    try {
+      // Try to find by name first
+      const source = await prisma.source.findFirst({
+        where: {
+          OR: [
+            { id: nameOrId },
+            { name: nameOrId }
+          ]
+        }
+      });
+
+      if (source) {
+        await prisma.source.delete({ where: { id: source.id } });
+        console.log(`✓ Removed source: ${source.name}`);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error(`Error removing source: ${error.message}`);
+      return false;
     }
-    return false;
   }
 
   /**
    * List all configured sources
    */
   async listSources() {
-    return await Source.find({});
+    return await prisma.source.findMany({
+      orderBy: { createdAt: 'asc' }
+    });
   }
 
   /**
@@ -98,17 +114,20 @@ export class NewsLoop {
       // Save discovered URLs to database as 'pending'
       for (const item of newItems) {
         try {
-          await Article.create({
-            url: item.link,
-            sourceId: source._id,
-            title: item.title,
-            excerpt: item.content,
-            byline: item.author,
-            status: 'pending',
-            discoveredAt: item.pubDate || new Date()
+          await prisma.article.create({
+            data: {
+              url: item.link,
+              sourceId: source.id,
+              title: item.title,
+              excerpt: item.content,
+              byline: item.author,
+              status: 'pending',
+              discoveredAt: item.pubDate || new Date()
+            }
           });
         } catch (error) {
-          if (error.code !== 11000) throw error;
+          // Ignore unique constraint violations (duplicates)
+          if (!error.code?.includes('P2002')) throw error;
         }
       }
 
@@ -143,7 +162,10 @@ export class NewsLoop {
     let totalScraped = 0;
     let totalFailed = 0;
 
-    const sources = await Source.find({ active: true }).sort({ lastCheckedAt: 1 });
+    const sources = await prisma.source.findMany({
+      where: { active: true },
+      orderBy: { lastCheckedAt: 'asc' }
+    });
     console.log(`\n📋 Found ${sources.length} source(s)`);
 
     // ═══════════════════════════════════════════════════════════════
@@ -162,27 +184,30 @@ export class NewsLoop {
       
       const items = await this.discoverFromSource(source);
       if (items.length > 0) {
-        pendingBySource[source._id.toString()] = items;
+        pendingBySource[source.id] = items;
       }
     }
 
     // 2. Also load pending articles from database (from previous runs)
     console.log('\n📂 Loading pending articles from database...');
-    const pendingFromDB = await Article.find({ status: 'pending' }).populate('sourceId');
+    const pendingFromDB = await prisma.article.findMany({
+      where: { status: 'pending' },
+      include: { source: true }
+    });
     
     if (pendingFromDB.length > 0) {
       console.log(`   ✓ Found ${pendingFromDB.length} pending articles in DB`);
       
       for (const article of pendingFromDB) {
-        if (!article.sourceId) continue;
+        if (!article.source) continue;
         
-        const sourceId = article.sourceId._id.toString();
+        const sourceId = article.sourceId;
         const item = {
           title: article.title,
           link: article.url,
           content: article.excerpt,
           author: article.byline,
-          source: article.sourceId
+          source: article.source
         };
         
         if (!pendingBySource[sourceId]) {
@@ -240,9 +265,9 @@ export class NewsLoop {
           try {
             const articleData = await scrapeNewsArticle(item.link, this.options);
 
-            await Article.findOneAndUpdate(
-              { url: item.link },
-              {
+            await prisma.article.update({
+              where: { url: item.link },
+              data: {
                 title: articleData.title || item.title,
                 textContent: articleData.textContent,
                 excerpt: articleData.excerpt || item.content,
@@ -251,10 +276,11 @@ export class NewsLoop {
                 status: 'scraped',
                 scrapedAt: new Date()
               }
-            );
+            });
 
-            await Source.findByIdAndUpdate(item.source._id, {
-              $inc: { totalArticles: 1 }
+            await prisma.source.update({
+              where: { id: item.source.id },
+              data: { totalArticles: { increment: 1 } }
             });
 
             console.log(`             ✓ Done (${articleData.textContent?.length || 0} chars)`);
@@ -263,10 +289,10 @@ export class NewsLoop {
           } catch (error) {
             console.log(`             ✗ Failed: ${error.message.substring(0, 40)}...`);
             
-            await Article.findOneAndUpdate(
-              { url: item.link },
-              { status: 'failed', errorMessage: error.message }
-            );
+            await prisma.article.update({
+              where: { url: item.link },
+              data: { status: 'failed', errorMessage: error.message }
+            });
             totalFailed++;
           }
 
@@ -404,31 +430,37 @@ export class NewsLoop {
    * Get recent articles
    */
   async getRecentArticles(limit = 10) {
-    return await Article.find({ status: 'scraped' })
-      .sort({ scrapedAt: -1 })
-      .limit(limit)
-      .populate('sourceId', 'name');
+    return await prisma.article.findMany({
+      where: { status: 'scraped' },
+      orderBy: { scrapedAt: 'desc' },
+      take: limit,
+      include: { source: { select: { name: true } } }
+    });
   }
 
   /**
    * Get pending articles
    */
   async getPendingArticles(limit = 10) {
-    return await Article.find({ status: 'pending' })
-      .sort({ discoveredAt: -1 })
-      .limit(limit)
-      .populate('sourceId', 'name');
+    return await prisma.article.findMany({
+      where: { status: 'pending' },
+      orderBy: { discoveredAt: 'desc' },
+      take: limit,
+      include: { source: { select: { name: true } } }
+    });
   }
 
   /**
    * Get statistics
    */
   async getStats() {
-    const total = await Article.countDocuments();
-    const scraped = await Article.countDocuments({ status: 'scraped' });
-    const pending = await Article.countDocuments({ status: 'pending' });
-    const failed = await Article.countDocuments({ status: 'failed' });
-    const sources = await Source.countDocuments({ active: true });
+    const [total, scraped, pending, failed, sources] = await Promise.all([
+      prisma.article.count(),
+      prisma.article.count({ where: { status: 'scraped' } }),
+      prisma.article.count({ where: { status: 'pending' } }),
+      prisma.article.count({ where: { status: 'failed' } }),
+      prisma.source.count({ where: { active: true } })
+    ]);
 
     return { total, scraped, pending, failed, sources };
   }
@@ -437,19 +469,23 @@ export class NewsLoop {
    * Clear all articles
    */
   async clearArticles() {
-    const result = await Article.deleteMany({});
-    console.log(`✓ Cleared ${result.deletedCount} articles`);
-    await Source.updateMany({}, { totalArticles: 0 });
-    return result.deletedCount;
+    const result = await prisma.article.deleteMany({});
+    console.log(`✓ Cleared ${result.count} articles`);
+    await prisma.source.updateMany({
+      data: { totalArticles: 0 }
+    });
+    return result.count;
   }
 
   /**
    * Clear all sources
    */
   async clearSources() {
-    const result = await Source.deleteMany({});
-    console.log(`✓ Cleared ${result.deletedCount} sources`);
-    return result.deletedCount;
+    // Delete articles first due to foreign key
+    await prisma.article.deleteMany({});
+    const result = await prisma.source.deleteMany({});
+    console.log(`✓ Cleared ${result.count} sources`);
+    return result.count;
   }
 }
 
@@ -472,18 +508,16 @@ export async function setupDefaultSources() {
       name: 'The Verge',
       feedUrl: 'https://www.theverge.com/rss/index.xml',
       baseUrl: 'https://www.theverge.com'
-    },
-    {
-      name: 'Reuters World',
-      feedUrl: 'https://www.reutersagency.com/feed/',
-      baseUrl: 'https://www.reuters.com'
     }
   ];
 
   const newsLoop = new NewsLoop();
   
   for (const feed of feeds) {
-    const exists = await Source.findOne({ feedUrl: feed.feedUrl });
+    const exists = await prisma.source.findUnique({
+      where: { feedUrl: feed.feedUrl }
+    });
+    
     if (!exists) {
       await newsLoop.addSource(feed);
     } else {

@@ -1,7 +1,7 @@
 import express from 'express';
 import { serve } from 'inngest/express';
 import { inngest, functions } from './inngest/index.js';
-import { connectDB } from './db/index.js';
+import { connectDB } from './prisma.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,7 +13,7 @@ app.use(express.json());
 app.get('/', (req, res) => {
   res.json({ 
     status: 'running',
-    message: 'News Scraper with Inngest',
+    message: 'News Scraper with Inngest + Supabase',
     inngestDashboard: 'http://localhost:8288'
   });
 });
@@ -27,7 +27,7 @@ app.use('/api/inngest', serve({
 // Start server
 async function start() {
   try {
-    // Connect to MongoDB
+    // Connect to Supabase
     await connectDB();
 
     app.listen(PORT, () => {
@@ -37,6 +37,7 @@ async function start() {
       console.log('═'.repeat(60));
       console.log(`   Server:           http://localhost:${PORT}`);
       console.log(`   Inngest Endpoint: http://localhost:${PORT}/api/inngest`);
+      console.log(`   Database:         Supabase (PostgreSQL)`);
       console.log('');
       console.log('📋 NEXT STEPS:');
       console.log('   1. In another terminal, run the Inngest dev server:');

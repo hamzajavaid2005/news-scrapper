@@ -1,7 +1,7 @@
 import { inngest } from './client.js';
 import { RSSDiscovery } from '../discovery.js';
 import { scrapeNewsArticle } from '../scraper.js';
-import { Article, Source, connectDB } from '../db/index.js';
+import { prisma, connectDB } from '../prisma.js';
 
 /**
  * Scheduled news scraping function
@@ -18,18 +18,16 @@ export const scrapeNewsCycle = inngest.createFunction(
     // Connect to database
     await step.run("connect-db", async () => {
       await connectDB();
-      logger.info("Connected to MongoDB");
+      logger.info("Connected to Supabase");
     });
 
     // Get all active sources
     const sources = await step.run("get-sources", async () => {
-      const sources = await Source.find({ active: true });
+      const sources = await prisma.source.findMany({
+        where: { active: true }
+      });
       logger.info(`Found ${sources.length} active sources`);
-      return sources.map(s => ({ 
-        _id: s._id.toString(), 
-        name: s.name, 
-        feedUrl: s.feedUrl 
-      }));
+      return sources;
     });
 
     if (sources.length === 0) {
@@ -57,29 +55,35 @@ export const scrapeNewsCycle = inngest.createFunction(
           // Save to database as pending
           for (const item of newItems) {
             try {
-              await Article.create({
-                url: item.link,
-                sourceId: source._id,
-                title: item.title,
-                excerpt: item.content,
-                byline: item.author,
-                status: 'pending',
-                discoveredAt: item.pubDate || new Date()
+              await prisma.article.create({
+                data: {
+                  url: item.link,
+                  sourceId: source.id,
+                  title: item.title,
+                  excerpt: item.content,
+                  byline: item.author,
+                  status: 'pending',
+                  discoveredAt: item.pubDate || new Date()
+                }
               });
             } catch (error) {
-              if (error.code !== 11000) throw error; // Ignore duplicates
+              // Ignore unique constraint violations
+              if (!error.code?.includes('P2002')) throw error;
             }
           }
 
           // Update last checked time
-          await Source.findByIdAndUpdate(source._id, { lastCheckedAt: new Date() });
+          await prisma.source.update({
+            where: { id: source.id },
+            data: { lastCheckedAt: new Date() }
+          });
 
           logger.info(`${source.name}: Found ${newItems.length} new articles`);
           return newItems.map(item => ({
             link: item.link,
             title: item.title,
             content: item.content,
-            sourceId: source._id,
+            sourceId: source.id,
             sourceName: source.name
           }));
         } catch (error) {
@@ -93,14 +97,17 @@ export const scrapeNewsCycle = inngest.createFunction(
 
     // Also load pending articles from database
     const pendingFromDB = await step.run("load-pending", async () => {
-      const pending = await Article.find({ status: 'pending' }).populate('sourceId');
+      const pending = await prisma.article.findMany({
+        where: { status: 'pending' },
+        include: { source: true }
+      });
       logger.info(`Loaded ${pending.length} pending articles from DB`);
       return pending.map(a => ({
         link: a.url,
         title: a.title,
         content: a.excerpt,
-        sourceId: a.sourceId?._id?.toString(),
-        sourceName: a.sourceId?.name || 'Unknown'
+        sourceId: a.sourceId,
+        sourceName: a.source?.name || 'Unknown'
       }));
     });
 
@@ -128,9 +135,9 @@ export const scrapeNewsCycle = inngest.createFunction(
         try {
           const articleData = await scrapeNewsArticle(item.link);
 
-          await Article.findOneAndUpdate(
-            { url: item.link },
-            {
+          await prisma.article.update({
+            where: { url: item.link },
+            data: {
               title: articleData.title || item.title,
               textContent: articleData.textContent,
               excerpt: articleData.excerpt || item.content,
@@ -139,10 +146,11 @@ export const scrapeNewsCycle = inngest.createFunction(
               status: 'scraped',
               scrapedAt: new Date()
             }
-          );
+          });
 
-          await Source.findByIdAndUpdate(item.sourceId, {
-            $inc: { totalArticles: 1 }
+          await prisma.source.update({
+            where: { id: item.sourceId },
+            data: { totalArticles: { increment: 1 } }
           });
 
           logger.info(`✓ Scraped: ${item.title?.substring(0, 40)} (${articleData.textContent?.length || 0} chars)`);
@@ -151,10 +159,10 @@ export const scrapeNewsCycle = inngest.createFunction(
         } catch (error) {
           logger.error(`✗ Failed: ${item.title?.substring(0, 40)} - ${error.message}`);
           
-          await Article.findOneAndUpdate(
-            { url: item.link },
-            { status: 'failed', errorMessage: error.message }
-          );
+          await prisma.article.update({
+            where: { url: item.link },
+            data: { status: 'failed', errorMessage: error.message }
+          });
           
           return { success: false, url: item.link, error: error.message };
         }
@@ -189,8 +197,6 @@ export const manualScrape = inngest.createFunction(
   { event: "news/scrape.manual" },
   async ({ step, logger }) => {
     logger.info("Manual scrape triggered");
-    // Reuse the same logic as scheduled scrape
-    // This event can be sent via the Inngest dashboard or API
     return { message: "Manual scrape started" };
   }
 );

@@ -28,3 +28,5 @@ build/
 
 # Inngest
 .inngest/
+
+/src/generated/prisma

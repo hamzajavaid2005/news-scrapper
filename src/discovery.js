@@ -1,5 +1,5 @@
 import Parser from 'rss-parser';
-import { Article, Source } from './db/index.js';
+import { prisma } from './prisma.js';
 
 const parser = new Parser({
   timeout: 30000,
@@ -45,9 +45,10 @@ export class RSSDiscovery {
    * Check which URLs are new (not in database)
    */
   async filterNewUrls(urls) {
-    const existingArticles = await Article.find({
-      url: { $in: urls }
-    }).select('url');
+    const existingArticles = await prisma.article.findMany({
+      where: { url: { in: urls } },
+      select: { url: true }
+    });
 
     const existingUrls = new Set(existingArticles.map(a => a.url));
     return urls.filter(url => !existingUrls.has(url));
@@ -73,8 +74,9 @@ export class RSSDiscovery {
     console.log(`   ${newUrls.length} new articles to scrape`);
 
     // Update source last checked time
-    await Source.findByIdAndUpdate(source._id, {
-      lastCheckedAt: new Date()
+    await prisma.source.update({
+      where: { id: source.id },
+      data: { lastCheckedAt: new Date() }
     });
 
     // Return full item data for new articles (includes title, date, etc.)
@@ -86,7 +88,10 @@ export class RSSDiscovery {
    * Discover from all active sources
    */
   async discoverFromAllSources() {
-    const sources = await Source.find({ active: true }).sort({ lastCheckedAt: 1 });
+    const sources = await prisma.source.findMany({
+      where: { active: true },
+      orderBy: { lastCheckedAt: 'asc' }
+    });
     console.log(`\n🔍 Checking ${sources.length} RSS feed(s)...`);
 
     const allNewItems = [];

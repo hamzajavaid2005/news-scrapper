@@ -2,10 +2,10 @@
 
 import { NewsLoop, setupDefaultSources } from './newsLoop.js';
 import { RSSDiscovery } from './discovery.js';
-import { connectDB, disconnectDB, Source, Article } from './db/index.js';
+import { prisma, connectDB, disconnectDB } from './prisma.js';
 
 const HELP = `
-📰 News Scraper CLI (RSS-based)
+📰 News Scraper CLI (RSS-based with Supabase)
 ═══════════════════════════════════════════════════════════
 
 Usage: node src/cli.js <command> [options]
@@ -69,7 +69,7 @@ async function main() {
     return;
   }
 
-  // Connect to MongoDB
+  // Connect to Supabase
   await connectDB();
   const newsLoop = new NewsLoop();
 
@@ -150,7 +150,7 @@ async function main() {
             console.log(`  ${source.active ? '✓' : '✗'} ${source.name}`);
             console.log(`    Feed:     ${source.feedUrl}`);
             console.log(`    Articles: ${source.totalArticles}`);
-            console.log(`    Checked:  ${source.lastCheckedAt ? source.lastCheckedAt.toLocaleString() : 'never'}\n`);
+            console.log(`    Checked:  ${source.lastCheckedAt ? new Date(source.lastCheckedAt).toLocaleString() : 'never'}\n`);
           }
         }
         break;
@@ -199,8 +199,8 @@ async function main() {
           console.log(`\n📰 Recent ${articles.length} Articles:\n`);
           for (const article of articles) {
             console.log(`  📄 ${article.title || 'Untitled'}`);
-            console.log(`     Source:  ${article.sourceId?.name || 'Unknown'}`);
-            console.log(`     Scraped: ${article.scrapedAt?.toLocaleString()}`);
+            console.log(`     Source:  ${article.source?.name || 'Unknown'}`);
+            console.log(`     Scraped: ${article.scrapedAt ? new Date(article.scrapedAt).toLocaleString() : 'N/A'}`);
             console.log('');
           }
         }
@@ -217,7 +217,7 @@ async function main() {
           console.log(`\n⏳ ${articles.length} Pending Articles:\n`);
           for (const article of articles) {
             console.log(`  • ${article.title || article.url}`);
-            console.log(`    Source: ${article.sourceId?.name || 'Unknown'}`);
+            console.log(`    Source: ${article.source?.name || 'Unknown'}`);
             console.log('');
           }
         }
@@ -231,14 +231,18 @@ async function main() {
           break;
         }
         
-        const article = await Article.findOne({ url }).populate('sourceId', 'name');
+        const article = await prisma.article.findUnique({
+          where: { url },
+          include: { source: { select: { name: true } } }
+        });
+        
         if (!article) {
           console.log('\n✗ Article not found\n');
         } else {
           console.log('\n' + '═'.repeat(60));
           console.log('TITLE:', article.title || 'Untitled');
           console.log('═'.repeat(60));
-          console.log('SOURCE:', article.sourceId?.name || 'Unknown');
+          console.log('SOURCE:', article.source?.name || 'Unknown');
           console.log('AUTHOR:', article.byline || 'N/A');
           console.log('STATUS:', article.status);
           console.log('═'.repeat(60));

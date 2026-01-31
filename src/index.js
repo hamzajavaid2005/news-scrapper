@@ -1,15 +1,5 @@
-// Core scraping functions
-export { 
-  scrapeNewsArticle, 
-  scrapeMultipleArticles, 
-  getArticleText 
-} from './scraper.js';
-
-// Database models and connection
-export { Article, Source, connectDB, disconnectDB } from './db/index.js';
-
-// RSS Discovery
-export { RSSDiscovery } from './discovery.js';
-
-// News Loop
+// Main exports for the news scraper module
 export { NewsLoop, setupDefaultSources } from './newsLoop.js';
+export { RSSDiscovery } from './discovery.js';
+export { scrapeNewsArticle } from './scraper.js';
+export { prisma, connectDB, disconnectDB } from './prisma.js';
