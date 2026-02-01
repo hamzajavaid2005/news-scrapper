@@ -19,6 +19,8 @@ model Source {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   articles      Article[]
+
+  @@map("sources")
 }
 
 model Article {
@@ -37,9 +39,32 @@ model Article {
   
   sourceId     String
   source       Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  
+  generatedArticle GeneratedArticle?
 
   @@index([url])
   @@index([status])
   @@index([sourceId])
   @@map("articles")
 }
+
+model GeneratedArticle {
+  id          String   @id @default(uuid())
+  articleId   String   @unique
+  article     Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  
+  title       String         // AI-generated title
+  content     String         // AI-generated content
+  category    String         // e.g., "Politics", "Sports", "Tech", "Entertainment"
+  
+  status      String   @default("pending") // pending, generated, failed
+  errorMessage String?
+  generatedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([category])
+  @@index([status])
+  @@map("generated_articles")
+}
+

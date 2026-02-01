@@ -13,7 +13,7 @@ const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(
  */
 export const scrapeNewsCycle = inngest.createFunction(
   { 
-    id: "scrape-news-cycle",
+    id: "scrape-news-cycle-v2",  // Changed to force fresh runs
     retries: 3,  // Retry failed steps up to 3 times
     concurrency: { limit: 1 } // STRICTLY ONE AT A TIME
   },
@@ -56,21 +56,36 @@ export const scrapeNewsCycle = inngest.createFunction(
           
           // Save to database as pending
           for (const item of newItems) {
+            // Validate required fields strictly
+            const itemUrl = item.link?.trim();
+            const itemTitle = item.title?.trim();
+            const itemSourceId = source.id;
+            
+            // Skip items without required fields
+            if (!itemUrl || !itemTitle || !itemSourceId) {
+              logger.warn(`Skipping article with missing required fields from ${source.name}: url=${!!itemUrl}, title=${!!itemTitle}, sourceId=${!!itemSourceId}`);
+              continue;
+            }
+            
             try {
               await prisma.article.create({
                 data: {
-                  url: item.link,
-                  sourceId: source.id,
-                  title: item.title,
-                  excerpt: item.content,
-                  byline: item.author,
+                  url: itemUrl,
+                  sourceId: itemSourceId,
+                  title: itemTitle,
+                  excerpt: item.content ?? '',
+                  byline: item.author ?? '',
                   status: 'pending',
-                  discoveredAt: item.pubDate || new Date()
+                  discoveredAt: item.pubDate ?? new Date()
                 }
               });
             } catch (error) {
-              // Ignore unique constraint violations (P2002 is Prisma's unique constraint error)
-              if (error.code !== 'P2002') throw error;
+              // Ignore unique constraint violations and null constraint errors
+              // P2002 = unique constraint, P2011 = null constraint
+              if (error.code !== 'P2002' && error.code !== 'P2011') {
+                logger.warn(`Failed to save article from ${source.name}: ${error.message}`);
+              }
+              // Continue to next item instead of failing the whole discovery
             }
           }
 
@@ -81,13 +96,17 @@ export const scrapeNewsCycle = inngest.createFunction(
           });
 
           logger.info(`${source.name}: Found ${newItems.length} new articles`);
-          return newItems.map(item => ({
-            link: item.link,
-            title: item.title,
-            content: item.content,
-            sourceId: source.id,
-            sourceName: source.name
-          }));
+          
+          // Only return items with valid links and titles (with trimming)
+          return newItems
+            .filter(item => item.link?.trim() && item.title?.trim() && source.id)
+            .map(item => ({
+              link: item.link.trim(),
+              title: item.title.trim(),
+              content: item.content ?? '',
+              sourceId: source.id,
+              sourceName: source.name ?? 'Unknown'
+            }));
         } catch (error) {
           logger.error(`Failed to discover ${source.name}: ${error.message}`);
           return [];
@@ -101,17 +120,20 @@ export const scrapeNewsCycle = inngest.createFunction(
     const pendingFromDB = await step.run("load-pending", async () => {
       const pending = await prisma.article.findMany({
         where: { status: 'pending' },
-        take: 100, // Limit to 50 articles per run (approx 4-5 mins processing time)
+        take: 100, // Limit to 100 articles per run
         orderBy: { discoveredAt: 'desc' }, // Newest first
         include: { source: true }
       });
-      return pending.map(a => ({
-        link: a.url,
-        title: a.title,
-        content: a.excerpt,
-        sourceId: a.sourceId,
-        sourceName: a.source?.name || 'Unknown'
-      }));
+      // Filter out any articles with missing required fields
+      return pending
+        .filter(a => a.url && a.title && a.sourceId && a.source)
+        .map(a => ({
+          link: a.url,
+          title: a.title,
+          content: a.excerpt ?? '',
+          sourceId: a.sourceId,
+          sourceName: a.source?.name ?? 'Unknown'
+        }));
     });
 
     // Combine new and pending (avoid duplicates)
@@ -164,6 +186,12 @@ export const scrapeNewsCycle = inngest.createFunction(
             console.log(`🔄 [${getTimestamp()}] [${item.sourceName}] DUPLICATE (${(duplicateOf.similarity * 100).toFixed(0)}%): ${item.title?.substring(0, 40)}...`);
             console.log(`   └─ Similar to [${duplicateOf.sourceName || 'Unknown'}]: ${duplicateOf.title?.substring(0, 45)}...`);
             
+            // Validate required fields before upsert
+            if (!item.link || !item.sourceId) {
+              logger.warn(`Skipping duplicate article with missing required fields: url=${!!item.link}, sourceId=${!!item.sourceId}`);
+              return { success: false, status: 'skipped', reason: 'missing_required_fields' };
+            }
+            
             await prisma.article.upsert({
               where: { url: item.link },
               update: {
@@ -174,7 +202,7 @@ export const scrapeNewsCycle = inngest.createFunction(
               create: {
                 url: item.link,
                 sourceId: item.sourceId,
-                title: item.title || 'Duplicate',
+                title: item.title ?? 'Duplicate',
                 status: 'duplicate',
                 errorMessage: `Duplicate of ${duplicateOf.url}`,
                 scrapedAt: new Date()
@@ -183,26 +211,35 @@ export const scrapeNewsCycle = inngest.createFunction(
             return { success: true, status: 'duplicate' };
           }
 
+          // Validate required fields before upsert
+          if (!item.link || !item.sourceId) {
+            logger.warn(`Skipping article with missing required fields: url=${!!item.link}, sourceId=${!!item.sourceId}`);
+            return { success: false, url: item.link, error: 'missing_required_fields' };
+          }
+          
+          // Determine final title with proper fallback
+          const finalTitle = (articleData.title?.trim() || item.title?.trim() || 'Untitled');
+          
           // Save unique article (using upsert in case it doesn't exist)
-          await prisma.article.upsert({
+          const savedArticle = await prisma.article.upsert({
             where: { url: item.link },
             update: {
-              title: articleData.title || item.title,
-              textContent: articleData.textContent,
-              excerpt: articleData.excerpt || item.content,
-              byline: articleData.byline,
-              siteName: articleData.siteName,
+              title: finalTitle,
+              textContent: articleData.textContent ?? '',
+              excerpt: articleData.excerpt ?? item.content ?? '',
+              byline: articleData.byline ?? '',
+              siteName: articleData.siteName ?? '',
               status: 'scraped',
               scrapedAt: new Date(),
             },
             create: {
               url: item.link,
               sourceId: item.sourceId,
-              title: articleData.title || item.title,
-              textContent: articleData.textContent,
-              excerpt: articleData.excerpt || item.content,
-              byline: articleData.byline,
-              siteName: articleData.siteName,
+              title: finalTitle,
+              textContent: articleData.textContent ?? '',
+              excerpt: articleData.excerpt ?? item.content ?? '',
+              byline: articleData.byline ?? '',
+              siteName: articleData.siteName ?? '',
               status: 'scraped',
               scrapedAt: new Date(),
             }
@@ -219,9 +256,19 @@ export const scrapeNewsCycle = inngest.createFunction(
             data: { totalArticles: { increment: 1 } }
           });
 
+          // Trigger AI article generation
+          await inngest.send({
+            name: 'article/scraped',
+            data: {
+              articleId: savedArticle.id,
+              title: savedArticle.title,
+              sourceName: item.sourceName
+            }
+          });
+
           const remaining = allItems.length - (i + 1);
           logger.info(`✓ [${getTimestamp()}] [${item.sourceName}] Scraped: ${item.title?.substring(0, 30)}... [${remaining} remaining]`);
-          return { success: true, url: item.link, chars: articleData.textContent?.length || 0 };
+          return { success: true, url: item.link, articleId: savedArticle.id, chars: articleData.textContent?.length || 0 };
 
         } catch (error) {
           const remaining = allItems.length - (i + 1);
@@ -233,17 +280,20 @@ export const scrapeNewsCycle = inngest.createFunction(
           
           // Try to update the article status, ignore if it doesn't exist
           try {
-            await prisma.article.upsert({
-              where: { url: item.link },
-              update: { status: 'failed', errorMessage: error.message },
-              create: {
-                url: item.link,
-                sourceId: item.sourceId,
-                title: item.title || 'Unknown',
-                status: 'failed',
-                errorMessage: error.message,
-              }
-            });
+            // Only attempt upsert if we have required fields
+            if (item.link && item.sourceId) {
+              await prisma.article.upsert({
+                where: { url: item.link },
+                update: { status: 'failed', errorMessage: error.message },
+                create: {
+                  url: item.link,
+                  sourceId: item.sourceId,
+                  title: item.title ?? 'Unknown',
+                  status: 'failed',
+                  errorMessage: error.message,
+                }
+              });
+            }
           } catch (dbError) {
             // Ignore FK constraint errors - source may have been deleted
           }
@@ -258,9 +308,9 @@ export const scrapeNewsCycle = inngest.createFunction(
         totalFailed++;
       }
 
-      // 5-second delay between articles (except last one)
+      // 10-second delay between articles (except last one)
       if (i < allItems.length - 1) {
-        await step.sleep(`delay-between-articles-${i}`, "5s");
+        await step.sleep(`delay-between-articles-${i}`, "10s");
       }
     }
 
@@ -284,6 +334,3 @@ export const manualScrape = inngest.createFunction(
     return { message: "Manual scrape started" };
   }
 );
-
-// Export all functions
-export const functions = [scrapeNewsCycle, manualScrape];

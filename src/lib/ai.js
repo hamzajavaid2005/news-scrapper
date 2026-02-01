@@ -1,14 +1,5 @@
 import { gateway } from '@ai-sdk/gateway';
-import { embed } from 'ai';
-
-/**
- * Vercel AI Gateway Configuration
- * 
- * Uses Vercel AI Gateway to access models with your Vercel credits.
- * Set VERCEL_AI_GATEWAY_API_KEY in your .env file.
- * 
- * Get your API key from: https://vercel.com/dashboard/settings/ai-gateway
- */
+import { embed, generateText } from 'ai';
 
 /**
  * Generate embedding for text using Vercel AI Gateway
@@ -16,7 +7,7 @@ import { embed } from 'ai';
  * @returns {Promise<Array<number>|null>} - 1536-dimensional vector or null if disabled
  */
 export async function generateEmbedding(text) {
-  // Check if we have a Vercel AI Gateway key
+  
   if (!process.env.AI_GATEWAY_API_KEY) {
     console.warn('[AI] No AI_GATEWAY_API_KEY found - embeddings disabled');
     return null;
@@ -39,3 +30,115 @@ export async function generateEmbedding(text) {
     return null; // Return null instead of throwing - scraping continues without embeddings
   }
 }
+
+const CATEGORIES = [
+  'Politics',
+  'Sports',
+  'Technology',
+  'Entertainment',
+  'Business',
+  'Health',
+  'World',
+  'Pakistan',
+  'Science',
+  'Lifestyle',
+  'Breaking News',
+  'Opinion',
+  'Investigations',
+  'Economy',
+  'Education',
+  'Crime',
+  'Law',
+  'Security',
+  'Climate',
+  'Environment',
+  'Energy',
+  'Digital',
+  'Artificial Intelligence',
+  'Cybersecurity',
+  'Gadgets',
+  'Media',
+  'Culture',
+  'Travel',
+  'Food',
+  'Wellness',
+  'Religion',
+  'Human Rights',
+  'Society',
+  'History',
+  'Space',
+  'Innovation',
+  'Automobiles',
+  'Real Estate',
+  'Agriculture',
+  'Immigration',
+  'Elections',
+  'Governance',
+  'Public Policy',
+  'Explainers',
+  'Special Reports',
+  'Interviews'
+];
+
+/**
+ * Generate AI-rewritten article with category
+ * @param {object} article - Original article with title and textContent
+ * @returns {Promise<{title: string, content: string, category: string}|null>}
+ */
+export async function generateArticleContent(article) {
+  if (!process.env.AI_GATEWAY_API_KEY) {
+    console.warn('[AI] No AI_GATEWAY_API_KEY found - article generation disabled');
+    return null;
+  }
+
+  if (!article.textContent) return null;
+
+  const prompt = `You are a professional news writer. Rewrite the following article in a clear, engaging, and professional style. Also categorize it into one of these categories: ${CATEGORIES.join(', ')}.
+
+ORIGINAL ARTICLE:
+Title: ${article.title}
+Content: ${article.textContent.substring(0, 15000)}
+
+Respond in JSON format:
+{
+  "title": "Your rewritten headline",
+  "content": "Your rewritten article (2-4 paragraphs, professional news style)",
+  "category": "One of the listed categories"
+}
+
+Important:
+- Keep the facts accurate
+- Write in third person
+- Use professional news language
+- The content should be 200-500 words`;
+
+  try {
+    const { text } = await generateText({
+      model: gateway('openai/gpt-4o-mini'),
+      prompt,
+    });
+
+    // Parse JSON response
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('Invalid JSON response from AI');
+    }
+
+    const result = JSON.parse(jsonMatch[0]);
+    
+    // Validate category
+    if (!CATEGORIES.includes(result.category)) {
+      result.category = 'World'; // Default fallback
+    }
+
+    return {
+      title: result.title,
+      content: result.content,
+      category: result.category
+    };
+  } catch (error) {
+    console.error('Article generation failed:', error.message);
+    return null;
+  }
+}
+

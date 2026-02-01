@@ -1,2 +1,20 @@
+/**
+ * Inngest Functions Index
+ * 
+ * Central export for all Inngest functions
+ */
+
 export { inngest } from './client.js';
-export { functions, scrapeNewsCycle, manualScrape } from './functions.js';
+export { scrapeNewsCycle, manualScrape } from './functions.js';
+export { generateArticle } from './generateArticle.js';
+
+// Export all functions for Inngest serve
+import { scrapeNewsCycle, manualScrape } from './functions.js';
+import { generateArticle } from './generateArticle.js';
+
+export const functions = [
+  scrapeNewsCycle,
+  manualScrape,
+  generateArticle
+];
+
