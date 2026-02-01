@@ -1,43 +1,44 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters", "postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
+  provider   = "postgresql"
+  extensions = [vector]
 }
 
 model Source {
-  id            String    @id @default(uuid())
+  id            String   @id @default(uuid())
   name          String
-  feedUrl       String    @unique
+  feedUrl       String   @unique
   baseUrl       String?
-  active        Boolean   @default(true)
-  lastCheckedAt DateTime?
-  totalArticles Int       @default(0)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  active        Boolean  @default(true)
+  lastCheckedAt DateTime @default(now())
+  totalArticles Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
   articles      Article[]
-
-  @@map("sources")
 }
 
 model Article {
-  id           String    @id @default(uuid())
-  url          String    @unique
-  sourceId     String
-  source       Source    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  title        String?
-  textContent  String?
+  id           String   @id @default(uuid())
+  url          String   @unique
+  title        String
   excerpt      String?
+  textContent  String?
   byline       String?
   siteName     String?
-  status       String    @default("pending")
+  status       String   @default("pending") // pending, scraped, failed
   errorMessage String?
-  discoveredAt DateTime  @default(now())
+  discoveredAt DateTime @default(now())
   scrapedAt    DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  embedding    Unsupported("vector(1536)")?
+  
+  sourceId     String
+  source       Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
 
+  @@index([url])
   @@index([status])
   @@index([sourceId])
   @@map("articles")

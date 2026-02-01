@@ -1,20 +1,13 @@
 {
   "name": "news-scrapper",
   "version": "1.0.0",
-  "description": "News article scraper using Puppeteer and Mozilla Readability with MongoDB",
-  "main": "src/index.js",
+  "description": "News article scraper with Inngest, Prisma, and Supabase",
+  "main": "src/server.js",
   "type": "module",
-  "bin": {
-    "news-scraper": "./src/cli.js"
-  },
   "scripts": {
     "server": "node src/server.js",
     "inngest": "npx inngest-cli@latest dev -u http://localhost:3000/api/inngest",
-    "cli": "node src/cli.js",
-    "setup": "node src/cli.js setup-defaults",
-    "run": "node src/cli.js run",
-    "start": "node src/cli.js start",
-    "stats": "node src/cli.js stats",
+    "import-sources": "node src/import-sources.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -28,9 +21,12 @@
   "license": "ISC",
   "packageManager": "pnpm@10.14.0",
   "dependencies": {
+    "@ai-sdk/gateway": "^3.0.31",
+    "@ai-sdk/openai": "^3.0.24",
     "@mozilla/readability": "^0.6.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
+    "ai": "^6.0.66",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "inngest": "^3.50.0",

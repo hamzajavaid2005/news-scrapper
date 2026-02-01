@@ -32,12 +32,6 @@ const sources = [
     active: true
   },
   {
-    name: "Dawn News",
-    feedUrl: "https://www.dawn.com/feeds/home",
-    baseUrl: "https://www.dawn.com",
-    active: true
-  },
-  {
     name: "BOL News",
     feedUrl: "https://bolnews.com/feed",
     baseUrl: "https://bolnews.com",

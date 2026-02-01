@@ -2,6 +2,8 @@ import { inngest } from './client.js';
 import { RSSDiscovery } from '../discovery.js';
 import { scrapeNewsArticle } from '../scraper.js';
 import { prisma, connectDB } from '../prisma.js';
+import { generateEmbedding } from '../lib/ai.js';
+import { findSimilarArticles } from '../lib/vector.js';
 
 const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
 
@@ -13,15 +15,14 @@ export const scrapeNewsCycle = inngest.createFunction(
   { 
     id: "scrape-news-cycle",
     retries: 3,  // Retry failed steps up to 3 times
-    concurrency: 1 // STRICTLY ONE AT A TIME
+    concurrency: { limit: 1 } // STRICTLY ONE AT A TIME
   },
-  { cron: "*/10 * * * *" },  // Every 10 minutes
+  { cron: "*/3 * * * *" },  // Every 10 minutes
   async ({ step, logger }) => {
     
     // Connect to database
     await step.run("connect-db", async () => {
       await connectDB();
-      logger.info("Connected to Supabase");
     });
 
     // Get all active sources
@@ -40,8 +41,6 @@ export const scrapeNewsCycle = inngest.createFunction(
     const rss = new RSSDiscovery();
     let totalScraped = 0;
     let totalFailed = 0;
-
-    // Phase 1: Discover new articles from all RSS feeds
     const allNewItems = [];
     
     for (const source of sources) {
@@ -98,13 +97,14 @@ export const scrapeNewsCycle = inngest.createFunction(
       allNewItems.push(...items);
     }
 
-    // Also load pending articles from database
+    // Also load pending articles from database (LIMIT 50 to prevent overrun)
     const pendingFromDB = await step.run("load-pending", async () => {
       const pending = await prisma.article.findMany({
         where: { status: 'pending' },
+        take: 50, // Limit to 50 articles per run (approx 4-5 mins processing time)
+        orderBy: { discoveredAt: 'desc' }, // Newest first
         include: { source: true }
       });
-      logger.info(`Loaded ${pending.length} pending articles from DB`);
       return pending.map(a => ({
         link: a.url,
         title: a.title,
@@ -133,23 +133,84 @@ export const scrapeNewsCycle = inngest.createFunction(
       const item = allItems[i];
       
       const result = await step.run(`scrape-article-${i}`, async () => {
-        // Log removed to reduce noise
-        
         try {
           const articleData = await scrapeNewsArticle(item.link);
+          const fullText = `${articleData.title} ${articleData.excerpt || ''} ${articleData.textContent || ''}`;
 
-          await prisma.article.update({
+          
+          // Generate embedding for deduplication
+          let embedding = null;
+          try {
+            embedding = await generateEmbedding(fullText);
+          } catch (e) {
+            logger.warn(`Failed to generate embedding for ${item.link}: ${e.message}`);
+          }
+
+          let isDuplicate = false;
+          let duplicateOf = null;
+
+          if (embedding) {
+            const similar = await findSimilarArticles(embedding, 0.85); // 0.85 threshold
+            if (similar.length > 0 && similar[0].url !== item.link) {
+              isDuplicate = true;
+              duplicateOf = similar[0];
+            }
+          }
+
+          if (isDuplicate) {
+            const remaining = allItems.length - (i + 1);
+            console.log(`🔄 [${getTimestamp()}] [${item.sourceName}] DUPLICATE (${(duplicateOf.similarity * 100).toFixed(0)}%): ${item.title?.substring(0, 40)}...`);
+            console.log(`   └─ Similar to [${duplicateOf.sourceName || 'Unknown'}]: ${duplicateOf.title?.substring(0, 45)}...`);
+            
+            await prisma.article.upsert({
+              where: { url: item.link },
+              update: {
+                status: 'duplicate',
+                errorMessage: `Duplicate of ${duplicateOf.url}`,
+                scrapedAt: new Date()
+              },
+              create: {
+                url: item.link,
+                sourceId: item.sourceId,
+                title: item.title || 'Duplicate',
+                status: 'duplicate',
+                errorMessage: `Duplicate of ${duplicateOf.url}`,
+                scrapedAt: new Date()
+              }
+            });
+            return { success: true, status: 'duplicate' };
+          }
+
+          // Save unique article (using upsert in case it doesn't exist)
+          await prisma.article.upsert({
             where: { url: item.link },
-            data: {
+            update: {
               title: articleData.title || item.title,
               textContent: articleData.textContent,
               excerpt: articleData.excerpt || item.content,
               byline: articleData.byline,
               siteName: articleData.siteName,
               status: 'scraped',
-              scrapedAt: new Date()
+              scrapedAt: new Date(),
+            },
+            create: {
+              url: item.link,
+              sourceId: item.sourceId,
+              title: articleData.title || item.title,
+              textContent: articleData.textContent,
+              excerpt: articleData.excerpt || item.content,
+              byline: articleData.byline,
+              siteName: articleData.siteName,
+              status: 'scraped',
+              scrapedAt: new Date(),
             }
           });
+          
+          // If Prisma doesn't support writing to Unsupported field directly, we do a second raw update
+          if (embedding) {
+             const vectorString = `[${embedding.join(',')}]`;
+             await prisma.$executeRaw`UPDATE articles SET embedding = ${vectorString}::vector WHERE url = ${item.link}`;
+          }
 
           await prisma.source.update({
             where: { id: item.sourceId },
@@ -168,10 +229,22 @@ export const scrapeNewsCycle = inngest.createFunction(
           
           logger[logType](`✗ [${getTimestamp()}] [${item.sourceName}] ${errorMsg}: ${item.title?.substring(0, 30)}... [${remaining} remaining]`);
           
-          await prisma.article.update({
-            where: { url: item.link },
-            data: { status: 'failed', errorMessage: error.message }
-          });
+          // Try to update the article status, ignore if it doesn't exist
+          try {
+            await prisma.article.upsert({
+              where: { url: item.link },
+              update: { status: 'failed', errorMessage: error.message },
+              create: {
+                url: item.link,
+                sourceId: item.sourceId,
+                title: item.title || 'Unknown',
+                status: 'failed',
+                errorMessage: error.message,
+              }
+            });
+          } catch (dbError) {
+            // Ignore FK constraint errors - source may have been deleted
+          }
           
           return { success: false, url: item.link, error: error.message };
         }
