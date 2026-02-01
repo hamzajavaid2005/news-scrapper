@@ -17,7 +17,7 @@ export const scrapeNewsCycle = inngest.createFunction(
     retries: 3,  // Retry failed steps up to 3 times
     concurrency: { limit: 1 } // STRICTLY ONE AT A TIME
   },
-  { cron: "*/3 * * * *" },  // Every 10 minutes
+  { cron: "*/10 * * * *" },  // Every 10 minutes
   async ({ step, logger }) => {
     
     // Connect to database
@@ -69,8 +69,8 @@ export const scrapeNewsCycle = inngest.createFunction(
                 }
               });
             } catch (error) {
-              // Ignore unique constraint violations
-              if (!error.code?.includes('P2002')) throw error;
+              // Ignore unique constraint violations (P2002 is Prisma's unique constraint error)
+              if (error.code !== 'P2002') throw error;
             }
           }
 
@@ -101,7 +101,7 @@ export const scrapeNewsCycle = inngest.createFunction(
     const pendingFromDB = await step.run("load-pending", async () => {
       const pending = await prisma.article.findMany({
         where: { status: 'pending' },
-        take: 50, // Limit to 50 articles per run (approx 4-5 mins processing time)
+        take: 100, // Limit to 50 articles per run (approx 4-5 mins processing time)
         orderBy: { discoveredAt: 'desc' }, // Newest first
         include: { source: true }
       });
@@ -115,12 +115,14 @@ export const scrapeNewsCycle = inngest.createFunction(
     });
 
     // Combine new and pending (avoid duplicates)
-    const allItems = [...allNewItems];
-    for (const item of pendingFromDB) {
-      if (!allItems.some(i => i.link === item.link)) {
-        allItems.push(item);
-      }
-    }
+    // Use pending URLs as the base to avoid re-processing articles that were just discovered
+    const pendingUrls = new Set(pendingFromDB.map(p => p.link));
+    
+    // Filter out newly discovered items that are already pending in DB
+    const trulyNewItems = allNewItems.filter(item => !pendingUrls.has(item.link));
+    
+    // Start with pending items (they have priority), then add truly new ones
+    const allItems = [...pendingFromDB, ...trulyNewItems];
 
     logger.info(`Total articles to scrape: ${allItems.length}`);
 
