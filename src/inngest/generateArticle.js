@@ -66,8 +66,8 @@ export const generateArticle = inngest.createFunction(
     });
 
     // Save to database
-    await step.run("save-generated", async () => {
-      await prisma.generatedArticle.create({
+    const savedGenerated = await step.run("save-generated", async () => {
+      const saved = await prisma.generatedArticle.create({
         data: {
           articleId,
           title: generated.title,
@@ -79,11 +79,26 @@ export const generateArticle = inngest.createFunction(
       });
 
       logger.info(`✨ [${getTimestamp()}] Generated [${generated.category}]: ${generated.title?.substring(0, 40)}...`);
+      return saved;
+    });
+
+    // Trigger webhook function
+    await step.run("trigger-webhook", async () => {
+      await inngest.send({
+        name: 'article/generated',
+        data: {
+          generatedArticleId: savedGenerated.id,
+          articleId: articleId
+        }
+      });
+
+      logger.info(`📤 [${getTimestamp()}] Webhook trigger sent for: ${generated.title?.substring(0, 40)}...`);
     });
 
     return {
       status: 'success',
       articleId,
+      generatedArticleId: savedGenerated.id,
       category: generated.category,
       generatedTitle: generated.title
     };

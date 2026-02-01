@@ -93,7 +93,7 @@ export async function generateArticleContent(article) {
 
   if (!article.textContent) return null;
 
-  const prompt = `You are a professional news writer. Rewrite the following article in a clear, engaging, and professional style. Also categorize it into one of these categories: ${CATEGORIES.join(', ')}.
+  const prompt = `You are a professional news writer. Rewrite the following article in a clear, engaging, and professional style. And generate a article in 4 to 6 paragraphs and each paragraph should be around 60 to 80 words. Also categorize it into one of these categories: ${CATEGORIES.join(', ')}.
 
 ORIGINAL ARTICLE:
 Title: ${article.title}
