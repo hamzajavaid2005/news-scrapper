@@ -17,7 +17,7 @@ export const scrapeNewsCycle = inngest.createFunction(
     retries: 3,  // Retry failed steps up to 3 times
     concurrency: { limit: 1 } // STRICTLY ONE AT A TIME
   },
-  { cron: "*/3 * * * *" },  // Every 10 minutes
+  { cron: "*/10 * * * *" },  // Every 10 minutes
   async ({ step, logger }) => {
     
     // Connect to database
