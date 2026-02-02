@@ -6,6 +6,7 @@ const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(
 /**
  * Send generated article to webhook
  * Triggered when an AI article is successfully generated and saved
+ * OPTIMIZED: Reduced from 3 steps to 2 steps
  */
 export const sendWebhook = inngest.createFunction(
   {
@@ -17,13 +18,10 @@ export const sendWebhook = inngest.createFunction(
   async ({ event, step, logger }) => {
     const { generatedArticleId, articleId } = event.data;
 
-    // Connect to database
-    await step.run("connect-db", async () => {
+    // Step 1: Fetch the generated article (connects to DB first)
+    const generatedArticle = await step.run("fetch-article", async () => {
       await connectDB();
-    });
-
-    // Fetch the generated article from database
-    const generatedArticle = await step.run("fetch-generated-article", async () => {
+      
       const article = await prisma.generatedArticle.findUnique({
         where: { id: generatedArticleId },
         include: { article: true }
@@ -36,7 +34,7 @@ export const sendWebhook = inngest.createFunction(
       return article;
     });
 
-    // Send to webhook
+    // Step 2: Send to webhook (external HTTP call - keep separate for retry isolation)
     const webhookResult = await step.run("send-to-webhook", async () => {
       const webhookUrl = 'http://localhost:3001/api/webhook';
 

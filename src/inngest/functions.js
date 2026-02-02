@@ -20,13 +20,9 @@ export const scrapeNewsCycle = inngest.createFunction(
   { cron: "*/10 * * * *" },  // Every 10 minutes
   async ({ step, logger }) => {
     
-    // Connect to database
-    await step.run("connect-db", async () => {
-      await connectDB();
-    });
-
-    // Get all active sources
+    // Get all active sources (connects to DB first)
     const sources = await step.run("get-sources", async () => {
+      await connectDB();
       const sources = await prisma.source.findMany({
         where: { active: true }
       });

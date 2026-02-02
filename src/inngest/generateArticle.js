@@ -7,6 +7,7 @@ const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(
 /**
  * Generate AI article from scraped content
  * Triggered when an article is successfully scraped
+ * OPTIMIZED: Reduced from 6 steps to 3 steps
  */
 export const generateArticle = inngest.createFunction(
   {
@@ -18,30 +19,25 @@ export const generateArticle = inngest.createFunction(
   async ({ event, step, logger }) => {
     const { articleId, title, sourceName } = event.data;
 
-    // Connect to database
-    await step.run("connect-db", async () => {
+    // Step 1: Fetch article and check if already generated (combined DB operations)
+    const { article, existing } = await step.run("fetch-and-check", async () => {
       await connectDB();
-    });
-
-    // Fetch the article
-    const article = await step.run("fetch-article", async () => {
-      const art = await prisma.article.findUnique({
-        where: { id: articleId },
-        include: { source: true }
-      });
+      
+      const [art, existingGen] = await Promise.all([
+        prisma.article.findUnique({
+          where: { id: articleId },
+          include: { source: true }
+        }),
+        prisma.generatedArticle.findUnique({
+          where: { articleId }
+        })
+      ]);
       
       if (!art) {
         throw new Error(`Article not found: ${articleId}`);
       }
       
-      return art;
-    });
-
-    // Check if already generated
-    const existing = await step.run("check-existing", async () => {
-      return prisma.generatedArticle.findUnique({
-        where: { articleId }
-      });
+      return { article: art, existing: existingGen };
     });
 
     if (existing) {
@@ -49,7 +45,7 @@ export const generateArticle = inngest.createFunction(
       return { status: 'skipped', reason: 'already_generated' };
     }
 
-    // Generate AI content
+    // Step 2: Generate AI content (external API call - keep separate for retry isolation)
     const generated = await step.run("generate-content", async () => {
       logger.info(`🤖 [${getTimestamp()}] Generating: ${title?.substring(0, 50)}...`);
       
@@ -65,8 +61,8 @@ export const generateArticle = inngest.createFunction(
       return result;
     });
 
-    // Save to database (upsert for idempotency on retries)
-    const savedGenerated = await step.run("save-generated", async () => {
+    // Step 3: Save to database AND trigger webhook (combined for efficiency)
+    const savedGenerated = await step.run("save-and-notify", async () => {
       const saved = await prisma.generatedArticle.upsert({
         where: { articleId },
         update: {
@@ -87,20 +83,19 @@ export const generateArticle = inngest.createFunction(
       });
 
       logger.info(`✨ [${getTimestamp()}] Generated [${generated.category}]: ${generated.title?.substring(0, 40)}...`);
-      return saved;
-    });
 
-    // Trigger webhook function
-    await step.run("trigger-webhook", async () => {
+      // Trigger webhook in same step (it's just sending an event, not an external HTTP call)
       await inngest.send({
         name: 'article/generated',
         data: {
-          generatedArticleId: savedGenerated.id,
+          generatedArticleId: saved.id,
           articleId: articleId
         }
       });
 
       logger.info(`📤 [${getTimestamp()}] Webhook trigger sent for: ${generated.title?.substring(0, 40)}...`);
+      
+      return saved;
     });
 
     return {
