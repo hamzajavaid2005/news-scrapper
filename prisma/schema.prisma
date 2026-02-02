@@ -68,3 +68,15 @@ model GeneratedArticle {
   @@map("generated_articles")
 }
 
+model Webhook {
+  id          String   @id @default(uuid())
+  name        String                          // e.g., "Production Blog", "Staging"
+  url         String   @unique                // The webhook URL
+  active      Boolean  @default(true)         // Enable/disable webhook
+  secret      String?                         // Optional secret for authentication
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("webhooks")
+}

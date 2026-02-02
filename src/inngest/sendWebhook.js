@@ -8,41 +8,50 @@ const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(
 const RETRY_DELAYS = ['2m', '15m', '1h'];
 
 /**
- * Send generated article to webhook
+ * Send generated article to all active webhooks from database
  * Triggered when an AI article is successfully generated and saved
- * OPTIMIZED: Reduced from 3 steps to 2 steps
  * RETRY SCHEDULE: 2 minutes → 15 minutes → 1 hour → give up
  */
 export const sendWebhook = inngest.createFunction(
   {
     id: "send-webhook",
-    retries: 3, // 3 retries with custom delays
+    retries: 3,
     concurrency: { limit: 5 }
   },
   { event: "article/generated" },
   async ({ event, step, logger, attempt }) => {
     const { generatedArticleId, articleId } = event.data;
 
-    // Step 1: Fetch the generated article (connects to DB first)
-    const generatedArticle = await step.run("fetch-article", async () => {
+    // Step 1: Fetch the generated article AND all active webhooks
+    const { generatedArticle, webhooks } = await step.run("fetch-data", async () => {
       await connectDB();
       
-      const article = await prisma.generatedArticle.findUnique({
-        where: { id: generatedArticleId },
-        include: { article: true }
-      });
+      const [article, activeWebhooks] = await Promise.all([
+        prisma.generatedArticle.findUnique({
+          where: { id: generatedArticleId },
+          include: { article: true }
+        }),
+        prisma.webhook.findMany({
+          where: { active: true }
+        })
+      ]);
 
       if (!article) {
         throw new Error(`Generated article not found: ${generatedArticleId}`);
       }
 
-      return article;
+      return { generatedArticle: article, webhooks: activeWebhooks };
     });
 
-    // Step 2: Send to webhook with custom retry delays
-    const webhookResult = await step.run("send-to-webhook", async () => {
-      const webhookUrl = 'http://localhost:3001/api/webhook';
+    if (webhooks.length === 0) {
+      logger.warn(`⚠️ [${getTimestamp()}] No active webhooks found. Skipping.`);
+      return { status: 'skipped', reason: 'no_active_webhooks' };
+    }
 
+    logger.info(`📤 [${getTimestamp()}] Sending to ${webhooks.length} webhook(s): ${generatedArticle.title?.substring(0, 40)}...`);
+
+    // Step 2: Send to all webhooks
+    const results = await step.run("send-to-webhooks", async () => {
       const payload = {
         title: generatedArticle.title,
         content: generatedArticle.content,
@@ -50,52 +59,84 @@ export const sendWebhook = inngest.createFunction(
         articleId: generatedArticle.articleId
       };
 
-      logger.info(`📤 [${getTimestamp()}] Sending webhook (attempt ${attempt}): ${generatedArticle.title?.substring(0, 40)}...`);
+      const webhookResults = [];
 
-      try {
-        const response = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: {
+      for (const webhook of webhooks) {
+        try {
+          const headers = {
             'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload)
-        });
+          };
 
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Webhook failed with status ${response.status}: ${errorText}`);
-        }
+          // Add secret header if webhook has a secret
+          if (webhook.secret) {
+            headers['X-Webhook-Secret'] = webhook.secret;
+          }
 
-        const responseData = await response.json().catch(() => ({}));
+          const response = await fetch(webhook.url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+          });
 
-        logger.info(`✅ [${getTimestamp()}] Webhook sent successfully: ${generatedArticle.title?.substring(0, 40)}...`);
-
-        return {
-          status: response.status,
-          response: responseData
-        };
-      } catch (error) {
-        // attempt is 0-indexed: 0 = first try, 1 = first retry, etc.
-        if (attempt < RETRY_DELAYS.length) {
-          const delay = RETRY_DELAYS[attempt];
-          logger.warn(`❌ [${getTimestamp()}] Webhook failed (attempt ${attempt + 1}). Retrying in ${delay}...`);
-          throw new RetryAfterError(`Webhook failed: ${error.message}`, delay);
-        } else {
-          // All retries exhausted, throw regular error
-          logger.error(`❌ [${getTimestamp()}] Webhook failed after all retries. Giving up.`);
-          throw error;
+          if (!response.ok) {
+            const errorText = await response.text();
+            webhookResults.push({
+              webhookId: webhook.id,
+              name: webhook.name,
+              success: false,
+              error: `HTTP ${response.status}: ${errorText}`
+            });
+            logger.warn(`❌ [${getTimestamp()}] Webhook "${webhook.name}" failed: HTTP ${response.status}`);
+          } else {
+            webhookResults.push({
+              webhookId: webhook.id,
+              name: webhook.name,
+              success: true,
+              status: response.status
+            });
+            logger.info(`✅ [${getTimestamp()}] Webhook "${webhook.name}" sent successfully`);
+          }
+        } catch (error) {
+          webhookResults.push({
+            webhookId: webhook.id,
+            name: webhook.name,
+            success: false,
+            error: error.message
+          });
+          logger.warn(`❌ [${getTimestamp()}] Webhook "${webhook.name}" failed: ${error.message}`);
         }
       }
+
+      // Check if ALL webhooks failed
+      const allFailed = webhookResults.every(r => !r.success);
+      
+      if (allFailed && webhookResults.length > 0) {
+        // Retry with custom delay if all webhooks failed
+        if (attempt < RETRY_DELAYS.length) {
+          const delay = RETRY_DELAYS[attempt];
+          logger.warn(`❌ [${getTimestamp()}] All webhooks failed (attempt ${attempt + 1}). Retrying in ${delay}...`);
+          throw new RetryAfterError(`All webhooks failed`, delay);
+        } else {
+          logger.error(`❌ [${getTimestamp()}] All webhooks failed after all retries. Giving up.`);
+          throw new Error('All webhooks failed after retries');
+        }
+      }
+
+      return webhookResults;
     });
 
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+
     return {
-      status: 'success',
+      status: 'completed',
       generatedArticleId,
       articleId,
-      webhookStatus: webhookResult.status
+      webhooksSent: successCount,
+      webhooksFailed: failCount,
+      results
     };
   }
 );
 
 export default sendWebhook;
-
