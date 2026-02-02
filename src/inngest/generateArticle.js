@@ -65,10 +65,18 @@ export const generateArticle = inngest.createFunction(
       return result;
     });
 
-    // Save to database
+    // Save to database (upsert for idempotency on retries)
     const savedGenerated = await step.run("save-generated", async () => {
-      const saved = await prisma.generatedArticle.create({
-        data: {
+      const saved = await prisma.generatedArticle.upsert({
+        where: { articleId },
+        update: {
+          title: generated.title,
+          content: generated.content,
+          category: generated.category,
+          status: 'generated',
+          generatedAt: new Date()
+        },
+        create: {
           articleId,
           title: generated.title,
           content: generated.content,
