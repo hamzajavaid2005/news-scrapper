@@ -17,7 +17,7 @@ export const scrapeNewsCycle = inngest.createFunction(
     retries: 3,  // Retry failed steps up to 3 times
     concurrency: { limit: 1 } // STRICTLY ONE AT A TIME
   },
-  { cron: "*/10 * * * *" },  // Every 10 minutes
+  { cron: "*/2 * * * *" },  // Every 10 minutes
   async ({ step, logger }) => {
     
     // Get all active sources (connects to DB first)
@@ -252,19 +252,16 @@ export const scrapeNewsCycle = inngest.createFunction(
             data: { totalArticles: { increment: 1 } }
           });
 
-          // Trigger AI article generation
-          await inngest.send({
-            name: 'article/scraped',
-            data: {
-              articleId: savedArticle.id,
-              title: savedArticle.title,
-              sourceName: item.sourceName
-            }
-          });
-
           const remaining = allItems.length - (i + 1);
           logger.info(`✓ [${getTimestamp()}] [${item.sourceName}] Scraped: ${item.title?.substring(0, 30)}... [${remaining} remaining]`);
-          return { success: true, url: item.link, articleId: savedArticle.id, chars: articleData.textContent?.length || 0 };
+          return { 
+            success: true, 
+            url: item.link, 
+            articleId: savedArticle.id, 
+            title: savedArticle.title,
+            sourceName: item.sourceName,
+            chars: articleData.textContent?.length || 0 
+          };
 
         } catch (error) {
           const remaining = allItems.length - (i + 1);
@@ -298,8 +295,20 @@ export const scrapeNewsCycle = inngest.createFunction(
         }
       });
 
-      if (result.success) {
+      if (result.success && result.articleId) {
         totalScraped++;
+        
+        // Trigger AI article generation (separate step for reliability)
+        await step.run(`trigger-generate-${i}`, async () => {
+          await inngest.send({
+            name: 'article/scraped',
+            data: {
+              articleId: result.articleId,
+              title: result.title,
+              sourceName: result.sourceName
+            }
+          });
+        });
       } else {
         totalFailed++;
       }

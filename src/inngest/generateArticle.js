@@ -61,8 +61,8 @@ export const generateArticle = inngest.createFunction(
       return result;
     });
 
-    // Step 3: Save to database AND trigger webhook (combined for efficiency)
-    const savedGenerated = await step.run("save-and-notify", async () => {
+    // Step 3: Save to database
+    const savedGenerated = await step.run("save-generated", async () => {
       const saved = await prisma.generatedArticle.upsert({
         where: { articleId },
         update: {
@@ -83,19 +83,20 @@ export const generateArticle = inngest.createFunction(
       });
 
       logger.info(`✨ [${getTimestamp()}] Generated [${generated.category}]: ${generated.title?.substring(0, 40)}...`);
+      
+      return saved;
+    });
 
-      // Trigger webhook in same step (it's just sending an event, not an external HTTP call)
+    // Step 4: Trigger webhook event (separate step for reliability)
+    await step.run("trigger-webhook", async () => {
       await inngest.send({
         name: 'article/generated',
         data: {
-          generatedArticleId: saved.id,
+          generatedArticleId: savedGenerated.id,
           articleId: articleId
         }
       });
-
       logger.info(`📤 [${getTimestamp()}] Webhook trigger sent for: ${generated.title?.substring(0, 40)}...`);
-      
-      return saved;
     });
 
     return {

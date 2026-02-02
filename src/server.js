@@ -18,10 +18,21 @@ app.get('/', (req, res) => {
   });
 });
 
+// Health check endpoint for Docker
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+
+console.log("INNGEST_SIGNING_KEY", process.env.INNGEST_SIGNING_KEY);
+console.log("INNGEST_EVENT_KEY", process.env.INNGEST_EVENT_KEY);
+
+
 // Inngest endpoint - this is where Inngest sends requests
 app.use('/api/inngest', serve({
   client: inngest,
   functions: functions,
+  signingKey: process.env.INNGEST_SIGNING_KEY,
 }));
 
 // Start server
