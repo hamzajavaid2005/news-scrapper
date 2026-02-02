@@ -13,7 +13,7 @@ export const generateArticle = inngest.createFunction(
   {
     id: "generate-article",
     retries: 2,
-    concurrency: { limit: 3 } // Allow 3 parallel generations
+    concurrency: { limit: 1 } // Allow 1 parallel generations
   },
   { event: "article/scraped" },
   async ({ event, step, logger }) => {
