@@ -49,7 +49,7 @@ export const saveArticle = inngest.createFunction(
     });
 
     // Step 2: Trigger AI article generation
-    await step.run("trigger-ai-generation", async () => {
+    const triggerResult = await step.run("trigger-ai-generation", async () => {
       await inngest.send({
         name: 'article/scraped',
         data: {
@@ -60,12 +60,22 @@ export const saveArticle = inngest.createFunction(
       });
       
       logger.info(`[${getTimestamp()}] 📤 Triggered AI generation for: ${savedArticle.title?.substring(0, 40)}...`);
+      
+      return {
+        message: 'Article finalized. Dispatched AI generation event.',
+        eventSent: 'article/scraped',
+        articleId,
+        title: savedArticle.title,
+        sentAt: new Date().toISOString()
+      };
     });
 
     return {
+      message: `Article "${savedArticle.title?.substring(0, 40)}..." finalized in database and sent to AI for rewriting.`,
       status: 'success',
       articleId,
-      title: savedArticle.title
+      title: savedArticle.title,
+      nextStep: 'generateArticle'
     };
   }
 );

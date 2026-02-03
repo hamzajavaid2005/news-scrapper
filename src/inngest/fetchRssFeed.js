@@ -95,13 +95,21 @@ export const fetchRssFeed = inngest.createFunction(
       }
     });
 
+    // Always log article count (even if 0)
+    console.log(`   📰 ${sourceName}: ${newArticles.length} articles to scrape`);
+
     if (newArticles.length === 0) {
       return { 
-        message: "No new articles found", 
-        sourceName, 
-        articlesFound: 0 
+        message: `No new articles found in ${sourceName}. All articles already exist in database.`, 
+        status: 'success',
+        sourceName,
+        feedUrl,
+        articlesFound: 0,
+        articlesCreated: 0,
+        nextStep: 'none (no new articles)'
       };
     }
+
 
     // Step 2: Dispatch scrape events for each new article
     const dispatchResults = await step.run("dispatch-scrape-events", async () => {
@@ -119,19 +127,25 @@ export const fetchRssFeed = inngest.createFunction(
       // Send all events in a batch
       await inngest.send(events);
       
-      logger.info(`[${getTimestamp()}] 📤 ${sourceName}: ${events.length} articles to scrape`);
-      
       return {
+        message: `Dispatched ${events.length} articles for scraping`,
         dispatchedCount: events.length,
-        articles: newArticles
+        articles: newArticles.map(a => ({
+          id: a.articleId,
+          title: a.title?.substring(0, 50) + '...',
+          url: a.url
+        }))
       };
     });
 
     return {
-      message: "RSS feed processed",
+      message: `Found ${newArticles.length} new article(s) in ${sourceName}. Dispatched for content scraping.`,
+      status: 'success',
       sourceName,
+      feedUrl,
       articlesCreated: newArticles.length,
-      ...dispatchResults
+      ...dispatchResults,
+      nextStep: 'scrapeContent (for each article)'
     };
   }
 );

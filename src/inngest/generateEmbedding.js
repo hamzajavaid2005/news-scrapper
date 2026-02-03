@@ -57,7 +57,7 @@ export const generateArticleEmbedding = inngest.createFunction(
     });
 
     // Step 2: Trigger duplicate check (only pass articleId!)
-    await step.run("trigger-duplicate-check", async () => {
+    const triggerResult = await step.run("trigger-duplicate-check", async () => {
       await inngest.send({
         name: 'article/embedding.generated',
         data: {
@@ -69,12 +69,24 @@ export const generateArticleEmbedding = inngest.createFunction(
       });
       
       logger.info(`[${getTimestamp()}] 📤 Dispatched duplicate check for article: ${articleId}`);
+      
+      return {
+        message: 'Successfully dispatched duplicate check event',
+        eventSent: 'article/embedding.generated',
+        articleId,
+        hasEmbedding: result.hasEmbedding,
+        sentAt: new Date().toISOString()
+      };
     });
 
     return {
+      message: result.hasEmbedding 
+        ? `Embedding generated (1536 dimensions) and saved to database. Passed to duplicate checker.`
+        : `Embedding generation skipped or failed. Passed to duplicate checker without embedding.`,
       status: 'success',
       articleId,
-      hasEmbedding: result.hasEmbedding
+      hasEmbedding: result.hasEmbedding,
+      nextStep: 'checkDuplicate'
     };
   }
 );

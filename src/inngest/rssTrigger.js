@@ -56,14 +56,33 @@ export const rssTrigger = inngest.createFunction(
       console.log('═'.repeat(50));
       
       return {
+        message: `Dispatched ${events.length} RSS feed fetch events. Each source will be checked for new articles in parallel.`,
         dispatchedCount: events.length,
-        sources: sources.map(s => ({ id: s.id, name: s.name }))
+        triggeredAt: new Date().toISOString(),
+        sources: sources.map(s => ({ 
+          id: s.id, 
+          name: s.name,
+          feedUrl: s.feedUrl,
+          lastCheckedAt: s.lastCheckedAt
+        })),
+        nextStep: 'fetchRssFeed (for each source)'
       };
     });
 
     return {
-      message: "RSS trigger completed",
-      ...dispatchResults
+      message: `RSS Scheduler completed. Dispatched ${dispatchResults.dispatchedCount} feed fetch events. Check 'news/fetch-and-parse-rss-feed' runs for article counts.`,
+      status: 'success',
+      ...dispatchResults,
+      pipeline: {
+        step1: 'rssTrigger ✓ (current)',
+        step2: 'fetchRssFeed → discovers new articles',
+        step3: 'scrapeContent → extracts article text',
+        step4: 'generateEmbedding → creates AI vector',
+        step5: 'checkDuplicate → filters similar articles',
+        step6: 'saveArticle → finalizes in database',
+        step7: 'generateArticle → AI rewrites content',
+        step8: 'sendWebhook → delivers to destinations'
+      }
     };
   }
 );
