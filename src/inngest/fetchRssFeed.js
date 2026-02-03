@@ -110,8 +110,6 @@ export const fetchRssFeed = inngest.createFunction(
       };
     }
 
-
-    // Step 2: Dispatch scrape events for each new article
     // Step 2: Dispatch scrape events for each new article
     const events = newArticles.map(article => ({
       name: 'article/unique.found',
