@@ -4,7 +4,7 @@
 services:
   # Your News Scrapper Application
   news-scrapper:
-    image: YOUR_DOCKERHUB_USERNAME/news-scrapper:latest  # ← Update with your Docker Hub username
+    image: hamzajavaid2005/news-scrapper:latest
     container_name: news-scrapper
     ports:
       - "8000:8000"

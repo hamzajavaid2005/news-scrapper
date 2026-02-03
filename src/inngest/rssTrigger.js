@@ -13,7 +13,7 @@ export const rssTrigger = inngest.createFunction(
     retries: 2,
     concurrency: { limit: 1 }
   },
-  { cron: "*/1 * * * *" },
+  { cron: "*/15 * * * *" },
   async ({ step, logger }) => {
     
     // Step 1: Get all active sources from the database
