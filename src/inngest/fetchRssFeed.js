@@ -51,6 +51,17 @@ export const fetchRssFeed = inngest.createFunction(
         
         for (const item of newItems) {
           try {
+            // Use upsert to handle race conditions - only add to list if newly created
+            const existingCheck = await prisma.article.findUnique({
+              where: { url: item.link.trim() }
+            });
+            
+            // Skip if article already exists (race condition)
+            if (existingCheck) {
+              logger.info(`[${getTimestamp()}] ⏭️ Article already exists (race): ${item.title?.substring(0, 40)}...`);
+              continue;
+            }
+            
             const article = await prisma.article.create({
               data: {
                 url: item.link.trim(),
@@ -71,9 +82,9 @@ export const fetchRssFeed = inngest.createFunction(
             
             logger.info(`[${getTimestamp()}] ✓ Created pending: ${article.title?.substring(0, 40)}...`);
           } catch (error) {
-            // Handle unique constraint violation (race condition)
+            // Handle unique constraint violation (race condition - double safety)
             if (error.code === 'P2002') {
-              logger.info(`[${getTimestamp()}] Article already exists: ${item.title?.substring(0, 40)}...`);
+              logger.info(`[${getTimestamp()}] ⏭️ Article already exists: ${item.title?.substring(0, 40)}...`);
             } else {
               logger.warn(`[${getTimestamp()}] Failed to create article: ${error.message}`);
             }

@@ -93,7 +93,7 @@ export async function generateArticleContent(article) {
 
   if (!article.textContent) return null;
 
-  const prompt = `You are a professional news writer. Write an article on the following news in a clear, engaging, and professional style. And generate a article in 3 to 5 paragraphs and each paragraph should be around 30 to 50 words. Also categorize it into one of these categories: ${CATEGORIES.join(', ')}.
+  const prompt = `You are a professional news writer. Write an article on the following news in a clear, engaging, and professional style. And generate a article in 4 to 6 paragraphs and each paragraph should be around 40 to 60 words. Also categorize it into one of these categories: ${CATEGORIES.join(', ')}.
 
 ORIGINAL ARTICLE:
 Title: ${article.title}
@@ -102,7 +102,7 @@ Content: ${article.textContent.substring(0, 15000)}
 Respond in JSON format:
 {
   "title": "Your news headline",
-  "content": "Your news article (3 to 5 paragraphs, professional news style)",
+  "content": "Your news article (4 to 6 paragraphs, professional news style)",
   "category": "One of the listed categories"
 }
 
@@ -110,7 +110,7 @@ Important:
 - Keep the facts accurate
 - Write in third person
 - Use professional news language
-- The content should be 150 to 250 words`;
+- The content should be 200 to 350 words`;
 
   try {
     const { text } = await generateText({

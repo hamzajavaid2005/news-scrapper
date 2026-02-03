@@ -16,7 +16,7 @@ export const sendWebhook = inngest.createFunction(
   {
     id: "news/send-to-webhooks",
     retries: 3,
-    concurrency: { limit: 5 }
+    concurrency: { limit: 20 }
   },
   { event: "article/generated" },
   async ({ event, step, logger, attempt }) => {

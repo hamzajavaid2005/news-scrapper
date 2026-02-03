@@ -17,7 +17,7 @@ export const generateArticleEmbedding = inngest.createFunction(
   {
     id: "news/generate-ai-embedding",
     retries: 2,
-    concurrency: { limit: 5 } // Allow parallel embedding generation
+    concurrency: { limit: 1 } // Allow parallel embedding generation
   },
   { event: "article/content.scraped" },
   async ({ event, step, logger }) => {
