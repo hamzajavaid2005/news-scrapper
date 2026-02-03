@@ -88,24 +88,14 @@ export const generateArticle = inngest.createFunction(
     });
 
     // Step 4: Trigger webhook event (separate step for reliability)
-    const triggerResult = await step.run("trigger-webhook", async () => {
-      await inngest.send({
-        name: 'article/generated',
-        data: {
-          generatedArticleId: savedGenerated.id,
-          articleId: articleId
-        }
-      });
-      logger.info(`📤 [${getTimestamp()}] Webhook trigger sent for: ${generated.title?.substring(0, 40)}...`);
-      
-      return {
-        message: 'AI article generated. Dispatched webhook delivery event.',
-        eventSent: 'article/generated',
+    await step.sendEvent("trigger-webhook", {
+      name: 'article/generated',
+      data: {
         generatedArticleId: savedGenerated.id,
-        articleId,
-        sentAt: new Date().toISOString()
-      };
+        articleId: articleId
+      }
     });
+    logger.info(`📤 [${getTimestamp()}] Webhook trigger sent for: ${generated.title?.substring(0, 40)}...`);
 
     return {
       message: `AI successfully rewrote article as "${generated.title?.substring(0, 40)}..." in category [${generated.category}]. Sent to webhooks.`,

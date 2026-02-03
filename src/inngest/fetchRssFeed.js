@@ -112,31 +112,30 @@ export const fetchRssFeed = inngest.createFunction(
 
 
     // Step 2: Dispatch scrape events for each new article
-    const dispatchResults = await step.run("dispatch-scrape-events", async () => {
-      const events = newArticles.map(article => ({
-        name: 'article/unique.found',
-        data: {
-          articleId: article.articleId,
-          sourceId,
-          sourceName,
-          articleUrl: article.url,
-          title: article.title
-        }
-      }));
+    // Step 2: Dispatch scrape events for each new article
+    const events = newArticles.map(article => ({
+      name: 'article/unique.found',
+      data: {
+        articleId: article.articleId,
+        sourceId,
+        sourceName,
+        articleUrl: article.url,
+        title: article.title
+      }
+    }));
 
-      // Send all events in a batch
-      await inngest.send(events);
-      
-      return {
-        message: `Dispatched ${events.length} articles for scraping`,
-        dispatchedCount: events.length,
-        articles: newArticles.map(a => ({
-          id: a.articleId,
-          title: a.title?.substring(0, 50) + '...',
-          url: a.url
-        }))
-      };
-    });
+    // Send all events using step.sendEvent (works with Inngest execution context)
+    await step.sendEvent("dispatch-scrape-events", events);
+    
+    const dispatchResults = {
+      message: `Dispatched ${events.length} articles for scraping`,
+      dispatchedCount: events.length,
+      articles: newArticles.map(a => ({
+        id: a.articleId,
+        title: a.title?.substring(0, 50) + '...',
+        url: a.url
+      }))
+    };
 
     return {
       message: `Found ${newArticles.length} new article(s) in ${sourceName}. Dispatched for content scraping.`,

@@ -73,25 +73,16 @@ export const scrapeContent = inngest.createFunction(
     });
 
     // Step 2: Trigger embedding generation (only pass articleId!)
-    const triggerResult = await step.run("trigger-embedding", async () => {
-      await inngest.send({
-        name: 'article/content.scraped',
-        data: {
-          articleId,
-          sourceId,
-          sourceName
-        }
-      });
-      
-      logger.info(`[${getTimestamp()}] 📤 Dispatched embedding generation for article: ${articleId}`);
-      
-      return {
-        message: 'Successfully dispatched embedding generation event',
-        eventSent: 'article/content.scraped',
+    await step.sendEvent("trigger-embedding", {
+      name: 'article/content.scraped',
+      data: {
         articleId,
-        sentAt: new Date().toISOString()
-      };
+        sourceId,
+        sourceName
+      }
     });
+    
+    logger.info(`[${getTimestamp()}] 📤 Dispatched embedding generation for article: ${articleId}`);
 
     return {
       message: `Article content scraped successfully (${result.contentLength} chars) and passed to embedding generation`,

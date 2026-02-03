@@ -6,16 +6,16 @@ const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(
 /**
  * RSS Trigger Function
  * 
- * Runs every 5 minutes and dispatches each active RSS feed URL
+ * Runs every 1 minute and dispatches each active RSS feed URL
  * as a separate event to be processed independently.
  */
 export const rssTrigger = inngest.createFunction(
   {
-    id: "news/scheduler-dispatch-feeds-every-2min",
+    id: "news/scheduler-dispatch-feeds-every-1min",
     retries: 2,
     concurrency: { limit: 1 } // Only one trigger at a time
   },
-  { cron: "*/2 * * * *" }, // Every 2 minutes
+  { cron: "*/1 * * * *" }, // Every 1 minute
   async ({ step, logger }) => {
     
     // Step 1: Get all active sources from the database
@@ -33,46 +33,33 @@ export const rssTrigger = inngest.createFunction(
       return { message: "No active sources found", dispatchedCount: 0 };
     }
 
-    // Step 2: Dispatch an event for each RSS feed URL
-    const dispatchResults = await step.run("dispatch-rss-events", async () => {
-      const events = sources.map(source => ({
-        name: 'rss/trigger',
-        data: {
-          sourceId: source.id,
-          feedUrl: source.feedUrl,
-          sourceName: source.name
-        }
-      }));
+    // Step 2: Build events and dispatch using step.sendEvent
+    const events = sources.map(source => ({
+      name: 'rss/trigger',
+      data: {
+        sourceId: source.id,
+        feedUrl: source.feedUrl,
+        sourceName: source.name
+      }
+    }));
 
-      // Send all events in a batch
-      await inngest.send(events);
-      
-      console.log('');
-      console.log('═'.repeat(50));
-      console.log(`📡 RSS SCHEDULER - ${getTimestamp()}`);
-      console.log('═'.repeat(50));
-      console.log(`   Sources to check: ${events.length}`);
-      sources.forEach(s => console.log(`   • ${s.name}`));
-      console.log('═'.repeat(50));
-      
-      return {
-        message: `Dispatched ${events.length} RSS feed fetch events. Each source will be checked for new articles in parallel.`,
-        dispatchedCount: events.length,
-        triggeredAt: new Date().toISOString(),
-        sources: sources.map(s => ({ 
-          id: s.id, 
-          name: s.name,
-          feedUrl: s.feedUrl,
-          lastCheckedAt: s.lastCheckedAt
-        })),
-        nextStep: 'fetchRssFeed (for each source)'
-      };
-    });
+    // Log the sources being checked
+    console.log('');
+    console.log('═'.repeat(50));
+    console.log(`📡 RSS SCHEDULER - ${getTimestamp()}`);
+    console.log('═'.repeat(50));
+    console.log(`   Sources to check: ${events.length}`);
+    sources.forEach(s => console.log(`   • ${s.name}`));
+    console.log('═'.repeat(50));
+
+    // Send all events using step.sendEvent (works with Inngest execution context)
+    await step.sendEvent("dispatch-rss-events", events);
 
     return {
-      message: `RSS Scheduler completed. Dispatched ${dispatchResults.dispatchedCount} feed fetch events. Check 'news/fetch-and-parse-rss-feed' runs for article counts.`,
+      message: `RSS Scheduler completed. Dispatched ${events.length} feed fetch events.`,
       status: 'success',
-      ...dispatchResults,
+      dispatchedCount: events.length,
+      sources: sources.map(s => s.name),
       pipeline: {
         step1: 'rssTrigger ✓ (current)',
         step2: 'fetchRssFeed → discovers new articles',

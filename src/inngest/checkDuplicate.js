@@ -103,26 +103,16 @@ export const checkDuplicate = inngest.createFunction(
     }
 
     // Step 3: Trigger save for unique article (only pass articleId!)
-    const triggerResult = await step.run("trigger-save-article", async () => {
-      await inngest.send({
-        name: 'article/duplicate.checked',
-        data: {
-          articleId,
-          sourceId,
-          sourceName
-        }
-      });
-      
-      logger.info(`[${getTimestamp()}] 📤 Dispatched save for unique article: ${articleId}`);
-      
-      return {
-        message: 'Article is unique. Dispatched save event to finalize article.',
-        eventSent: 'article/duplicate.checked',
+    await step.sendEvent("trigger-save-article", {
+      name: 'article/duplicate.checked',
+      data: {
         articleId,
-        isUnique: true,
-        sentAt: new Date().toISOString()
-      };
+        sourceId,
+        sourceName
+      }
     });
+    
+    logger.info(`[${getTimestamp()}] 📤 Dispatched save for unique article: ${articleId}`);
 
     return {
       message: 'Duplicate check passed - article is unique and will be saved.',

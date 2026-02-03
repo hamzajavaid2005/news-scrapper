@@ -57,27 +57,17 @@ export const generateArticleEmbedding = inngest.createFunction(
     });
 
     // Step 2: Trigger duplicate check (only pass articleId!)
-    const triggerResult = await step.run("trigger-duplicate-check", async () => {
-      await inngest.send({
-        name: 'article/embedding.generated',
-        data: {
-          articleId,
-          sourceId,
-          sourceName,
-          hasEmbedding: result.hasEmbedding
-        }
-      });
-      
-      logger.info(`[${getTimestamp()}] 📤 Dispatched duplicate check for article: ${articleId}`);
-      
-      return {
-        message: 'Successfully dispatched duplicate check event',
-        eventSent: 'article/embedding.generated',
+    await step.sendEvent("trigger-duplicate-check", {
+      name: 'article/embedding.generated',
+      data: {
         articleId,
-        hasEmbedding: result.hasEmbedding,
-        sentAt: new Date().toISOString()
-      };
+        sourceId,
+        sourceName,
+        hasEmbedding: result.hasEmbedding
+      }
     });
+    
+    logger.info(`[${getTimestamp()}] 📤 Dispatched duplicate check for article: ${articleId}`);
 
     return {
       message: result.hasEmbedding 
