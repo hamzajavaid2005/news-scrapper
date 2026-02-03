@@ -11,7 +11,7 @@ const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(
  */
 export const generateArticle = inngest.createFunction(
   {
-    id: "generate-article",
+    id: "news/ai-rewrite-article",
     retries: 2,
     concurrency: { limit: 1 } // Allow 1 parallel generations
   },

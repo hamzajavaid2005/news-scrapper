@@ -14,7 +14,7 @@ const RETRY_DELAYS = ['2m', '15m', '1h'];
  */
 export const sendWebhook = inngest.createFunction(
   {
-    id: "send-webhook",
+    id: "news/send-to-webhooks",
     retries: 3,
     concurrency: { limit: 5 }
   },
