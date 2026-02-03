@@ -21,8 +21,9 @@ RUN npx prisma generate
 # Production stage
 FROM node:20-alpine AS production
 
-# Install pnpm
+# Install pnpm and wget/curl for healthcheck
 RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
+RUN apk add --no-cache wget curl
 
 WORKDIR /app
 
