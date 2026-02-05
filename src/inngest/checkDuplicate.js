@@ -60,7 +60,7 @@ export const checkDuplicate = inngest.createFunction(
         const embeddingStr = embeddingResult[0].embedding;
         const embedding = JSON.parse(embeddingStr);
 
-        const similar = await findSimilarArticles(embedding, 0.93); // 93% similarity threshold
+        const similar = await findSimilarArticles(embedding, 0.85); // 93% similarity threshold
         
         if (similar.length > 0 && similar[0].url !== article.url) {
           const duplicate = similar[0];
