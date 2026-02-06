@@ -15,6 +15,8 @@ services:
       # Inngest dev mode - connect to local inngest container
       - INNGEST_BASE_URL=http://inngest:8288
       - INNGEST_DEV=1
+      - AXIOM_TOKEN=xaat-2f274f65-25ba-4a28-acc2-67c0e3bf42c6
+      - AXIOM_DATASET=news-scraper
     depends_on:
       inngest:
         condition: service_healthy
