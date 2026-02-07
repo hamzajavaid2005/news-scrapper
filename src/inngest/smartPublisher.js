@@ -6,6 +6,9 @@ import { generateArticleContent } from "../lib/ai.js";
 const getTimestamp = () =>
     new Date().toISOString().replace("T", " ").substring(0, 19);
 
+// AI generation timeout (30 seconds)
+const AI_TIMEOUT_MS = 30000;
+
 /**
  * Smart Publisher Function
  *
@@ -13,16 +16,18 @@ const getTimestamp = () =>
  * For each webhook:
  * - Calculates if it's time to publish based on daily quota
  * - Finds scraped articles matching webhook's category config
- * - Generates AI content ON-DEMAND (not pre-generated)
+ * - Generates AI content ON-DEMAND (fresh content for each webhook)
  * - Sends to webhook
  * - Tracks in WebhookPublish table
+ *
+ * NOTE: Same article can be sent to multiple webhooks - each gets unique AI content
  *
  * Cron: Every 30 minutes (48 intervals per day)
  */
 export const smartPublisher = inngest.createFunction(
     {
         id: "news/smart-publisher",
-        retries: 2,
+        retries: 3, // Retry entire function on failure
         concurrency: { limit: 1 }, // Only one instance at a time
     },
     { cron: "*/30 * * * *" }, // Every 30 minutes
@@ -45,12 +50,14 @@ export const smartPublisher = inngest.createFunction(
             return { status: "skipped", reason: "no_active_webhooks" };
         }
 
-        // Step 2: Process each webhook
+        // Step 2: Process each webhook in separate steps (for individual retry)
         const results = [];
 
         for (const webhook of webhooks) {
+            // Each webhook gets its own step - if one fails, others continue
+            // Inngest will retry individual failed steps
             const result = await step.run(
-                `publish-to-${webhook.name.replace(/\s+/g, "-")}`,
+                `publish-to-${webhook.name.replace(/\s+/g, "-").toLowerCase()}`,
                 async () => {
                     return await publishToWebhook(webhook);
                 }
@@ -62,11 +69,15 @@ export const smartPublisher = inngest.createFunction(
             (r) => r.status === "published"
         ).length;
         const skipCount = results.filter((r) => r.status === "skipped").length;
+        const failCount = results.filter(
+            (r) => r.status === "failed" || r.status === "error"
+        ).length;
 
         log.info("Smart Publisher completed", {
             totalWebhooks: webhooks.length,
             published: successCount,
             skipped: skipCount,
+            failed: failCount,
         });
 
         return {
@@ -81,225 +92,259 @@ export const smartPublisher = inngest.createFunction(
  * Publish one article to a specific webhook based on its config
  */
 async function publishToWebhook(webhook) {
-    try {
-        // Calculate today's quota
-        const dailyQuota = calculateDailyQuota(webhook);
+    await connectDB();
 
-        // Count articles published today to this webhook
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
+    // Calculate today's quota
+    const dailyQuota = calculateDailyQuota(webhook);
 
-        const publishedToday = await prisma.webhookPublish.count({
-            where: {
-                webhookId: webhook.id,
-                publishedAt: { gte: todayStart },
-                status: "success",
-            },
+    // Count articles published today to this webhook (only successful ones)
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const publishedToday = await prisma.webhookPublish.count({
+        where: {
+            webhookId: webhook.id,
+            publishedAt: { gte: todayStart },
+            status: "success", // Only count successful publishes
+        },
+    });
+
+    // Check if daily quota reached
+    if (publishedToday >= dailyQuota) {
+        log.info(`Webhook "${webhook.name}" reached daily quota`, {
+            quota: dailyQuota,
+            published: publishedToday,
         });
-
-        // Check if daily quota reached
-        if (publishedToday >= dailyQuota) {
-            log.info(`Webhook "${webhook.name}" reached daily quota`, {
-                quota: dailyQuota,
-                published: publishedToday,
-            });
-            return {
-                webhookId: webhook.id,
-                webhookName: webhook.name,
-                status: "skipped",
-                reason: "daily_quota_reached",
-                quota: dailyQuota,
-                published: publishedToday,
-            };
-        }
-
-        // TIME-BASED DISTRIBUTION
-        // Calculate how many articles should have been published by now
-        const now = new Date();
-        const hoursPassed = now.getHours() + now.getMinutes() / 60;
-        const expectedPublished = Math.floor((hoursPassed / 24) * dailyQuota);
-
-        // Should publish if we're behind schedule
-        const shouldPublish = publishedToday < expectedPublished;
-
-        if (!shouldPublish) {
-            const nextPublishHour = ((publishedToday + 1) / dailyQuota) * 24;
-            const nextPublishTime = `${Math.floor(nextPublishHour)}:${Math.floor(
-                (nextPublishHour % 1) * 60
-            )
-                .toString()
-                .padStart(2, "0")}`;
-
-            return {
-                webhookId: webhook.id,
-                webhookName: webhook.name,
-                status: "skipped",
-                reason: "waiting_for_scheduled_time",
-                publishedToday,
-                expectedByNow: expectedPublished,
-                nextPublishAt: nextPublishTime,
-            };
-        }
-
-        // Get next category to publish (round-robin)
-        const categories =
-            webhook.categories.length > 0 ? webhook.categories : null;
-        let targetCategory = null;
-        let nextCategoryIndex = webhook.lastCategoryIndex;
-
-        if (categories && categories.length > 0) {
-            targetCategory = categories[nextCategoryIndex % categories.length];
-            nextCategoryIndex = (nextCategoryIndex + 1) % categories.length;
-        }
-
-        // Find latest SCRAPED article that hasn't been published to this webhook
-        let article = await findNextScrapedArticle(webhook.id, targetCategory);
-
-        // If no article in target category, try other categories
-        if (!article && categories && categories.length > 1) {
-            for (let i = 1; i < categories.length; i++) {
-                const altCategory =
-                    categories[
-                        (webhook.lastCategoryIndex + i) % categories.length
-                    ];
-                article = await findNextScrapedArticle(webhook.id, altCategory);
-                if (article) {
-                    nextCategoryIndex =
-                        (webhook.lastCategoryIndex + i + 1) % categories.length;
-                    break;
-                }
-            }
-        }
-
-        // If still no article with category filter, try any article
-        if (!article) {
-            article = await findNextScrapedArticle(webhook.id, null);
-        }
-
-        if (!article) {
-            return {
-                webhookId: webhook.id,
-                webhookName: webhook.name,
-                status: "skipped",
-                reason: "no_articles_available",
-            };
-        }
-
-        log.ai(
-            "generating",
-            `On-demand AI for: ${article.title?.substring(0, 40)}...`,
-            {
-                articleId: article.id,
-                webhookName: webhook.name,
-            }
-        );
-
-        // GENERATE AI CONTENT ON-DEMAND
-        const aiContent = await generateArticleContent({
-            title: article.title,
-            textContent: article.textContent,
-        });
-
-        if (!aiContent) {
-            log.error(`AI generation failed for article ${article.id}`);
-            return {
-                webhookId: webhook.id,
-                webhookName: webhook.name,
-                status: "failed",
-                reason: "ai_generation_failed",
-                articleId: article.id,
-            };
-        }
-
-        // Save generated content to GeneratedArticle table
-        const generatedArticle = await prisma.generatedArticle.upsert({
-            where: { articleId: article.id },
-            update: {
-                title: aiContent.title,
-                content: aiContent.content,
-                category: aiContent.category,
-                status: "generated",
-                generatedAt: new Date(),
-            },
-            create: {
-                articleId: article.id,
-                title: aiContent.title,
-                content: aiContent.content,
-                category: aiContent.category,
-                status: "generated",
-                generatedAt: new Date(),
-            },
-        });
-
-        log.ai(
-            "generated",
-            `[${aiContent.category}]: ${aiContent.title?.substring(0, 40)}...`,
-            {
-                articleId: article.id,
-                generatedId: generatedArticle.id,
-            }
-        );
-
-        // Send to webhook
-        const sendResult = await sendArticleToWebhook(webhook, {
-            title: aiContent.title,
-            content: aiContent.content,
-            category: aiContent.category,
-            articleId: article.id,
-        });
-
-        // Record the publish in WebhookPublish table
-        await prisma.webhookPublish.create({
-            data: {
-                webhookId: webhook.id,
-                generatedArticleId: generatedArticle.id,
-                category: aiContent.category,
-                status: sendResult.success ? "success" : "failed",
-            },
-        });
-
-        // Update category index for round-robin
-        await prisma.webhook.update({
-            where: { id: webhook.id },
-            data: { lastCategoryIndex: nextCategoryIndex },
-        });
-
-        if (sendResult.success) {
-            log.webhook(
-                webhook.name,
-                `Published: ${aiContent.title?.substring(0, 40)}...`,
-                {
-                    category: aiContent.category,
-                    articleId: article.id,
-                }
-            );
-
-            return {
-                webhookId: webhook.id,
-                webhookName: webhook.name,
-                status: "published",
-                articleId: article.id,
-                generatedArticleId: generatedArticle.id,
-                articleTitle: aiContent.title,
-                category: aiContent.category,
-            };
-        } else {
-            log.error(`Webhook "${webhook.name}" failed`, sendResult.error);
-            return {
-                webhookId: webhook.id,
-                webhookName: webhook.name,
-                status: "failed",
-                error: sendResult.error,
-            };
-        }
-    } catch (error) {
-        log.error(`Error publishing to webhook "${webhook.name}"`, error);
         return {
             webhookId: webhook.id,
             webhookName: webhook.name,
-            status: "error",
-            error: error.message,
+            status: "skipped",
+            reason: "daily_quota_reached",
+            quota: dailyQuota,
+            published: publishedToday,
         };
+    }
+
+    // TIME-BASED DISTRIBUTION
+    // Divide the day into equal time slots based on daily quota
+    // For 4 articles/day: slots at 0h, 6h, 12h, 18h (every 6 hours)
+    const now = new Date();
+    const hoursPassed = now.getHours() + now.getMinutes() / 60;
+
+    // Calculate which time slot we're in
+    const slotDuration = 24 / dailyQuota; // Hours per article
+    const currentSlot = Math.floor(hoursPassed / slotDuration) + 1; // 1-indexed
+    const articlesToPublishByNow = Math.min(currentSlot, dailyQuota);
+
+    // Should publish if we haven't reached our target for this time slot
+    const shouldPublish = publishedToday < articlesToPublishByNow;
+
+    if (!shouldPublish) {
+        // Calculate when the next slot starts
+        const nextSlot = Math.min(publishedToday + 1, dailyQuota);
+        const nextSlotHour = nextSlot * slotDuration;
+        const nextPublishTime = `${Math.floor(nextSlotHour).toString().padStart(2, "0")}:${Math.floor(
+            (nextSlotHour % 1) * 60
+        )
+            .toString()
+            .padStart(2, "0")}`;
+
+        return {
+            webhookId: webhook.id,
+            webhookName: webhook.name,
+            status: "skipped",
+            reason: "waiting_for_scheduled_time",
+            publishedToday,
+            targetByNow: articlesToPublishByNow,
+            nextPublishAt: nextPublishTime,
+            slotDurationHours: slotDuration.toFixed(1),
+        };
+    }
+
+    // Get next category to publish (round-robin)
+    const categories =
+        webhook.categories.length > 0 ? webhook.categories : null;
+    let targetCategory = null;
+    let nextCategoryIndex = webhook.lastCategoryIndex;
+
+    if (categories && categories.length > 0) {
+        targetCategory = categories[nextCategoryIndex % categories.length];
+        nextCategoryIndex = (nextCategoryIndex + 1) % categories.length;
+    }
+
+    // Find latest SCRAPED article that hasn't been SUCCESSFULLY published to this webhook
+    let article = await findNextScrapedArticle(webhook.id, targetCategory);
+
+    // If no article in target category, try other categories
+    if (!article && categories && categories.length > 1) {
+        for (let i = 1; i < categories.length; i++) {
+            const altCategory =
+                categories[(webhook.lastCategoryIndex + i) % categories.length];
+            article = await findNextScrapedArticle(webhook.id, altCategory);
+            if (article) {
+                nextCategoryIndex =
+                    (webhook.lastCategoryIndex + i + 1) % categories.length;
+                break;
+            }
+        }
+    }
+
+    // If still no article with category filter, try any article
+    if (!article) {
+        article = await findNextScrapedArticle(webhook.id, null);
+    }
+
+    if (!article) {
+        return {
+            webhookId: webhook.id,
+            webhookName: webhook.name,
+            status: "skipped",
+            reason: "no_articles_available",
+        };
+    }
+
+    log.ai(
+        "generating",
+        `On-demand AI for: ${article.title?.substring(0, 40)}...`,
+        {
+            articleId: article.id,
+            webhookName: webhook.name,
+        }
+    );
+
+    // GENERATE AI CONTENT ON-DEMAND with timeout
+    // Each webhook gets FRESH AI content (even for same source article)
+    let aiContent;
+    try {
+        aiContent = await generateWithTimeout(
+            {
+                title: article.title,
+                textContent: article.textContent,
+            },
+            AI_TIMEOUT_MS
+        );
+    } catch (error) {
+        log.error(`AI generation failed for article ${article.id}`, error);
+        // Throw to trigger Inngest retry
+        throw new Error(`AI generation failed: ${error.message}`);
+    }
+
+    if (!aiContent) {
+        // Throw to trigger Inngest retry
+        throw new Error(
+            `AI generation returned null for article ${article.id}`
+        );
+    }
+
+    log.ai(
+        "generated",
+        `[${aiContent.category}]: ${aiContent.title?.substring(0, 40)}...`,
+        {
+            articleId: article.id,
+            webhookName: webhook.name,
+        }
+    );
+
+    // Send to webhook
+    const sendResult = await sendArticleToWebhook(webhook, {
+        title: aiContent.title,
+        content: aiContent.content,
+        category: aiContent.category,
+        articleId: article.id,
+    });
+
+    // If webhook failed, throw to trigger Inngest retry
+    if (!sendResult.success) {
+        log.error(`Webhook "${webhook.name}" failed`, sendResult.error);
+        throw new Error(`Webhook delivery failed: ${sendResult.error}`);
+    }
+
+    // === SUCCESS PATH ONLY BELOW ===
+
+    // Save generated content to GeneratedArticle table
+    // Note: This may overwrite if same article sent to multiple webhooks
+    // That's fine - each webhook got unique AI content at send time
+    const generatedArticle = await prisma.generatedArticle.upsert({
+        where: { articleId: article.id },
+        update: {
+            title: aiContent.title,
+            content: aiContent.content,
+            category: aiContent.category,
+            status: "generated",
+            generatedAt: new Date(),
+        },
+        create: {
+            articleId: article.id,
+            title: aiContent.title,
+            content: aiContent.content,
+            category: aiContent.category,
+            status: "generated",
+            generatedAt: new Date(),
+        },
+    });
+
+    // Record the publish in WebhookPublish table
+    await prisma.webhookPublish.create({
+        data: {
+            webhookId: webhook.id,
+            generatedArticleId: generatedArticle.id,
+            category: aiContent.category,
+            status: "success",
+        },
+    });
+
+    // Update category index for round-robin (ONLY on success)
+    await prisma.webhook.update({
+        where: { id: webhook.id },
+        data: { lastCategoryIndex: nextCategoryIndex },
+    });
+
+    log.webhook(
+        webhook.name,
+        `Published: ${aiContent.title?.substring(0, 40)}...`,
+        {
+            category: aiContent.category,
+            articleId: article.id,
+        }
+    );
+
+    return {
+        webhookId: webhook.id,
+        webhookName: webhook.name,
+        status: "published",
+        articleId: article.id,
+        generatedArticleId: generatedArticle.id,
+        articleTitle: aiContent.title,
+        category: aiContent.category,
+    };
+}
+
+/**
+ * Generate AI content with timeout
+ */
+async function generateWithTimeout(articleData, timeoutMs) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        // Pass signal to AI generation if supported, otherwise just race
+        const result = await Promise.race([
+            generateArticleContent(articleData),
+            new Promise((_, reject) =>
+                setTimeout(
+                    () =>
+                        reject(
+                            new Error(
+                                `AI generation timed out after ${timeoutMs}ms`
+                            )
+                        ),
+                    timeoutMs
+                )
+            ),
+        ]);
+        return result;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
@@ -323,15 +368,19 @@ function calculateDailyQuota(webhook) {
 /**
  * Find the next SCRAPED article to publish to a webhook
  * - Must be status 'scraped'
- * - Must not have been sent to this webhook before
- * - Optionally filter by webhook's categories (matches AI-determined category later)
- * - For category matching: we'll check if source contains category keyword or use any
+ * - Must not have been SUCCESSFULLY sent to this webhook before
+ * - Optionally filter by webhook's categories
  * - Order by latest first (scrapedAt DESC)
+ *
+ * NOTE: Same article CAN be sent to different webhooks - each gets fresh AI content
  */
 async function findNextScrapedArticle(webhookId, category = null) {
-    // Get IDs of articles already sent to this webhook
+    // Get IDs of articles already SUCCESSFULLY sent to this webhook
     const sentArticles = await prisma.webhookPublish.findMany({
-        where: { webhookId },
+        where: {
+            webhookId,
+            status: "success", // FIX: Only exclude successful publishes
+        },
         select: { generatedArticle: { select: { articleId: true } } },
     });
 

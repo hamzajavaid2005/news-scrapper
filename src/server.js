@@ -3,6 +3,7 @@ import { serve } from "inngest/express";
 import { inngest, functions } from "./inngest/index.js";
 import { connectDB } from "./prisma.js";
 import { log, flushLogs, isAxiomConfigured } from "./lib/logger.js";
+import webhookRoutes from "./routes/webhooks.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -37,6 +38,9 @@ app.use(
         // signingKey: process.env.INNGEST_SIGNING_KEY,
     })
 );
+
+// Webhook management API
+app.use("/api/webhooks", webhookRoutes);
 
 // Start server
 async function start() {
