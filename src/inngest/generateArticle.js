@@ -103,26 +103,20 @@ export const generateArticle = inngest.createFunction(
             return saved;
         });
 
-        // Step 4: Trigger webhook event (separate step for reliability)
-        await step.sendEvent("trigger-webhook", {
-            name: "article/generated",
-            data: {
-                generatedArticleId: savedGenerated.id,
-                articleId: articleId,
-            },
-        });
+        // Note: Webhook delivery is handled by smartPublisher (runs every 30 min)
+        // This allows rate-limited, category-rotated publishing per webhook config
         logger.info(
-            `📤 [${getTimestamp()}] Webhook trigger sent for: ${generated.title?.substring(0, 40)}...`
+            `✅ [${getTimestamp()}] Article queued for smart publishing: ${generated.title?.substring(0, 40)}...`
         );
 
         return {
-            message: `AI successfully rewrote article as "${generated.title?.substring(0, 40)}..." in category [${generated.category}]. Sent to webhooks.`,
+            message: `AI successfully rewrote article as "${generated.title?.substring(0, 40)}..." in category [${generated.category}]. Queued for smart publishing.`,
             status: "success",
             articleId,
             generatedArticleId: savedGenerated.id,
             category: generated.category,
             generatedTitle: generated.title,
-            nextStep: "sendWebhook",
+            nextStep: "smartPublisher",
         };
     }
 );

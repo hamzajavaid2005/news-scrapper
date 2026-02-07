@@ -63,8 +63,12 @@ model GeneratedArticle {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
+  // Relation to track which webhooks received this article
+  webhookPublishes WebhookPublish[]
+  
   @@index([category])
   @@index([status])
+  @@index([generatedAt])
   @@map("generated_articles")
 }
 
@@ -75,8 +79,39 @@ model Webhook {
   active      Boolean  @default(true)         // Enable/disable webhook
   secret      String?                         // Optional secret for authentication
   
+  // Smart Publishing Configuration
+  dailyLimit        Int      @default(7)       // Articles per day (starting limit)
+  growthRate        Float    @default(0.10)    // Daily growth rate (10% = 0.10)
+  categories        String[] @default([])      // Categories to publish (empty = all)
+  lastCategoryIndex Int      @default(0)       // For round-robin category rotation
+  publishStartDay   DateTime @default(now())   // When to start counting days for growth
+  
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
+  // Relation to track published articles
+  publishedArticles WebhookPublish[]
+  
   @@map("webhooks")
 }
+
+// Track which articles have been sent to which webhooks
+model WebhookPublish {
+  id                  String   @id @default(uuid())
+  
+  webhookId           String
+  webhook             Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  
+  generatedArticleId  String
+  generatedArticle    GeneratedArticle @relation(fields: [generatedArticleId], references: [id], onDelete: Cascade)
+  
+  category            String           // Category at time of publishing
+  publishedAt         DateTime @default(now())
+  status              String   @default("success") // success, failed
+  
+  @@unique([webhookId, generatedArticleId]) // Prevent duplicate publishing
+  @@index([webhookId, publishedAt])
+  @@index([webhookId, category])
+  @@map("webhook_publishes")
+}
+
