@@ -22,7 +22,7 @@ const AI_TIMEOUT_MS = 30000;
  *
  * NOTE: Same article can be sent to multiple webhooks - each gets unique AI content
  *
- * Cron: Every 30 minutes (48 intervals per day)
+ * Cron: Every 10 minutes (144 intervals per day)
  */
 export const smartPublisher = inngest.createFunction(
     {
@@ -30,7 +30,7 @@ export const smartPublisher = inngest.createFunction(
         retries: 3, // Retry entire function on failure
         concurrency: { limit: 1 }, // Only one instance at a time
     },
-    { cron: "*/30 * * * *" }, // Every 30 minutes
+    { cron: "*/10 * * * *" }, // Every 10 minutes
     async ({ step, logger }) => {
         log.info("Smart Publisher started", { timestamp: getTimestamp() });
 
