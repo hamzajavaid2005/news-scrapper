@@ -4,6 +4,7 @@ import { inngest, functions } from "./inngest/index.js";
 import { connectDB } from "./prisma.js";
 import { log, flushLogs, isAxiomConfigured } from "./lib/logger.js";
 import webhookRoutes from "./routes/webhooks.js";
+import siteRoutes from "./routes/sites.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,6 +42,9 @@ app.use(
 
 // Webhook management API
 app.use("/api/webhooks", webhookRoutes);
+
+// Site self-registration API
+app.use("/api/sites", siteRoutes);
 
 // Start server
 async function start() {

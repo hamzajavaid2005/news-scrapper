@@ -358,11 +358,15 @@ function calculateDailyQuota(webhook) {
             (24 * 60 * 60 * 1000)
     );
 
-    const quota = Math.floor(
+    const rawQuota = Math.floor(
         webhook.dailyLimit * Math.pow(1 + webhook.growthRate, daysSinceStart)
     );
 
-    return Math.max(quota, 1); // At least 1 article per day
+    // Cap at maxDailyLimit if set (default 50), so growth never exceeds the ceiling
+    const ceiling = webhook.maxDailyLimit ?? 50;
+    const capped = Math.min(rawQuota, ceiling);
+
+    return Math.max(capped, 1); // At least 1 article per day
 }
 
 /**

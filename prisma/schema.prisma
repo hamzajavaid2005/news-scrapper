@@ -1,6 +1,6 @@
 generator client {
   provider        = "prisma-client-js"
-  previewFeatures = ["driverAdapters", "postgresqlExtensions"]
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
@@ -82,6 +82,7 @@ model Webhook {
   // Smart Publishing Configuration
   dailyLimit        Int      @default(7)       // Articles per day (starting limit)
   growthRate        Float    @default(0.10)    // Daily growth rate (10% = 0.10)
+  maxDailyLimit     Int      @default(50)      // Growth ceiling — never exceeds this
   categories        String[] @default([])      // Categories to publish (empty = all)
   lastCategoryIndex Int      @default(0)       // For round-robin category rotation
   publishStartDay   DateTime @default(now())   // When to start counting days for growth
@@ -89,10 +90,29 @@ model Webhook {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
-  // Relation to track published articles
+  // Relations
   publishedArticles WebhookPublish[]
+  registeredSite    RegisteredSite?
   
   @@map("webhooks")
+}
+
+// Track sites that self-registered via the WordPress plugin
+model RegisteredSite {
+  id           String   @id @default(uuid())
+  domain       String   @unique              // e.g. "https://myblog.com"
+  name         String
+  tokenHash    String                        // SHA-256 of registration token (audit)
+  status       String   @default("pending")  // pending, active, rejected
+  registeredAt DateTime @default(now())
+  approvedAt   DateTime?
+  
+  webhookId    String   @unique
+  webhook      Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([domain])
+  @@map("registered_sites")
 }
 
 // Track which articles have been sent to which webhooks
