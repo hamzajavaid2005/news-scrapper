@@ -456,7 +456,7 @@ async function sendArticleToWebhook(webhook, article) {
             body: bodyString,
         });
 
-        if (!response.ok) {
+        if (!response.ok && response.status !== 409) {
             const errorText = await response.text();
             return {
                 success: false,
@@ -464,7 +464,8 @@ async function sendArticleToWebhook(webhook, article) {
             };
         }
 
-        return { success: true, status: response.status };
+        // 200-299 = published, 409 = already published (duplicate) — both are success
+        return { success: true, status: response.status, duplicate: response.status === 409 };
     } catch (error) {
         return { success: false, error: error.message };
     }
