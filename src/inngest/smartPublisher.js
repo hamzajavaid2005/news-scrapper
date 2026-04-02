@@ -431,18 +431,29 @@ async function sendArticleToWebhook(webhook, article) {
             articleId: article.articleId,
         };
 
+        const bodyString = JSON.stringify(payload);
+
         const headers = {
             "Content-Type": "application/json",
         };
 
         if (webhook.secret) {
-            headers["X-Webhook-Secret"] = webhook.secret;
+            // HMAC-SHA256 signing: sign the body + timestamp together
+            // This prevents tampering AND replay attacks (5 min window)
+            const timestamp = Math.floor(Date.now() / 1000).toString();
+            const { createHmac } = await import("crypto");
+            const signature = createHmac("sha256", webhook.secret)
+                .update(bodyString + timestamp)
+                .digest("hex");
+
+            headers["X-Webhook-Signature"] = `sha256=${signature}`;
+            headers["X-Webhook-Timestamp"]  = timestamp;
         }
 
         const response = await fetch(webhook.url, {
             method: "POST",
             headers,
-            body: JSON.stringify(payload),
+            body: bodyString,
         });
 
         if (!response.ok) {

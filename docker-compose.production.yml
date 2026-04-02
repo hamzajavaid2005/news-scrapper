@@ -1,42 +1,41 @@
 # Hostinger Deployment - Docker Compose
-# This uses pre-built images from Docker Hub (no build required on server)
+# Secrets are loaded from .env file (never commit secrets to git)
 
 services:
-  # Your News Scrapper Application
-  news-scrapper:
+  news-scraper:
     image: hamzajavaid2005/news-scrapper:latest
-    container_name: news-scrapper
+    container_name: news-scraper
     ports:
-      - "8000:8000"
+      - "3000:3000"
     environment:
-      - PORT=8000
+      - PORT=3000
       - DATABASE_URL=${DATABASE_URL}
       - DIRECT_URL=${DIRECT_URL}
       - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY}
-      - INNGEST_BASE_URL=http://inngest:8288
+      - INNGEST_BASE_URL=http://scraper-engine:8288
       - INNGEST_DEV=1
+      - AXIOM_TOKEN=${AXIOM_TOKEN}
+      - AXIOM_DATASET=news-scraper
+      - ADMIN_SECRET=${ADMIN_SECRET}
     depends_on:
-      inngest:
+      scraper-engine:
         condition: service_healthy
     networks:
       - news-network
     restart: unless-stopped
 
-  # Inngest Dev Server
-  inngest:
+  scraper-engine:
     image: inngest/inngest:latest
-    container_name: inngest-dev
-    command: >
-      inngest dev 
-      --no-discovery 
-      -u http://news-scrapper:8000/api/inngest
+    container_name: scraper-engine
+    command: inngest dev --no-discovery -u http://news-scraper:3000/api/inngest
     ports:
-      - "8288:8288"
+      - "8388:8288"
     networks:
       - news-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8288/health"]
+      # Healthcheck runs INSIDE the container — Inngest listens on 8288 internally
+      test: [ "CMD", "curl", "-f", "http://localhost:8288/health" ]
       interval: 10s
       timeout: 5s
       retries: 5

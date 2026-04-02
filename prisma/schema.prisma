@@ -103,10 +103,11 @@ model RegisteredSite {
   domain       String   @unique              // e.g. "https://myblog.com"
   name         String
   tokenHash    String                        // SHA-256 of registration token (audit)
+  apiKey       String   @unique             // Per-site key for settings sync auth
   status       String   @default("pending")  // pending, active, rejected
   registeredAt DateTime @default(now())
   approvedAt   DateTime?
-  
+
   webhookId    String   @unique
   webhook      Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
 

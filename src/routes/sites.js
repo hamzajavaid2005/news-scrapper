@@ -5,9 +5,16 @@ import crypto from "crypto";
 
 const router = express.Router();
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Generate a secure random hex string of given byte length */
+function generateKey(bytes = 32) {
+    return crypto.randomBytes(bytes).toString("hex");
+}
+
 /**
  * Verify a WordPress registration token by calling back to the WP site.
- * This is the core security check — the scrapper calls WordPress, not the other way.
+ * Core security check — scrapper calls WordPress, not the other way.
  */
 async function verifyRegistrationToken(domain, token) {
     const result = {
@@ -22,7 +29,6 @@ async function verifyRegistrationToken(domain, token) {
     };
 
     try {
-        // Build the verification URL on the WordPress site
         const verifyUrl = `${domain.replace(/\/$/, "")}/wp-json/news-automation/v1/register?token=${encodeURIComponent(token)}`;
 
         const controller = new AbortController();
@@ -43,14 +49,12 @@ async function verifyRegistrationToken(domain, token) {
 
         const data = await response.json();
 
-        // Validate the response shape from the plugin
         if (!data.secret || !data.domain) {
             result.error = "Invalid response from WordPress — plugin may not be installed correctly.";
             return result;
         }
 
-        // Verify the domain in the WP response matches what was sent in the request
-        // This prevents someone from registering with a fake domain
+        // Domain binding — response domain must match request domain
         const reportedDomain = data.domain.replace(/\/$/, "").toLowerCase();
         const requestedDomain = domain.replace(/\/$/, "").toLowerCase();
 
@@ -59,39 +63,34 @@ async function verifyRegistrationToken(domain, token) {
             return result;
         }
 
-        result.valid = true;
-        result.secret = data.secret;
-        result.categories = data.categories || [];
-        result.dailyLimit = data.dailyLimit || 7;
+        result.valid        = true;
+        result.secret       = data.secret;
+        result.categories   = data.categories   || [];
+        result.dailyLimit   = data.dailyLimit   || 7;
         result.maxDailyLimit = data.maxDailyLimit || 50;
-        result.growthRate = data.growthRate || 0.1;
-        result.pluginVersion = data.version || null;
+        result.growthRate   = data.growthRate   || 0.1;
+        result.pluginVersion = data.version     || null;
     } catch (err) {
-        if (err.name === "AbortError") {
-            result.error = "Connection to WordPress timed out after 10 seconds.";
-        } else {
-            result.error = err.message;
-        }
+        result.error = err.name === "AbortError"
+            ? "Connection to WordPress timed out after 10 seconds."
+            : err.message;
     }
 
     return result;
 }
 
+// ─── Routes ─────────────────────────────────────────────────────────────────
+
 /**
  * POST /api/sites/register
  *
- * One-call registration from a WordPress site running the News Automation plugin.
- * The WordPress plugin's "Connect" button triggers this.
+ * WordPress plugin "Connect" button triggers this.
+ * Verifies token, creates a PENDING webhook and registered site.
+ * Returns siteId + apiKey (used for status checks and settings sync).
  *
  * Body: { name, domain, token }
- *
- * Flow:
- *  1. Validate input
- *  2. Check domain not already registered
- *  3. Call WordPress back to verify the token (domain binding)
- *  4. Create Webhook (active: FALSE — requires admin approval)
- *  5. Create RegisteredSite record
- *  6. Respond with { status: "pending" }
+ * Plugin settings (categories, dailyLimit, etc.) are pulled from WordPress
+ * via the token verification callback.
  */
 router.post("/register", async (req, res) => {
     try {
@@ -99,7 +98,6 @@ router.post("/register", async (req, res) => {
 
         const { name, domain, token } = req.body;
 
-        // --- Validation ---
         if (!name || !domain || !token) {
             return res.status(400).json({
                 success: false,
@@ -107,10 +105,8 @@ router.post("/register", async (req, res) => {
             });
         }
 
-        // Normalize domain
         const normalizedDomain = domain.replace(/\/$/, "").toLowerCase();
 
-        // Check token format
         if (!token.startsWith("naw_reg_")) {
             return res.status(400).json({
                 success: false,
@@ -118,21 +114,51 @@ router.post("/register", async (req, res) => {
             });
         }
 
-        // --- Check for duplicate domain ---
+        // Check for duplicate domain
         const existingSite = await prisma.registeredSite.findUnique({
             where: { domain: normalizedDomain },
         });
 
         if (existingSite) {
-            return res.status(409).json({
-                success: false,
-                error: `Domain "${normalizedDomain}" is already registered. Contact the admin to manage this site.`,
+            // Domain already registered — verify token to prove ownership, then return credentials
+            log.info("Re-registration attempt for existing domain — verifying token", { domain: normalizedDomain });
+            const reVerify = await verifyRegistrationToken(normalizedDomain, token);
+            if (!reVerify.valid) {
+                return res.status(409).json({
+                    success: false,
+                    error: `Domain "${normalizedDomain}" is already registered. Token verification failed: ${reVerify.error}`,
+                    siteId: existingSite.id,
+                    status: existingSite.status,
+                });
+            }
+
+            // Token verified — site owner is re-linking. Update webhook settings and return credentials.
+            await prisma.webhook.update({
+                where: { id: existingSite.webhookId },
+                data: {
+                    secret: reVerify.secret,
+                    categories: reVerify.categories,
+                    dailyLimit: reVerify.dailyLimit,
+                    growthRate: reVerify.growthRate,
+                },
+            });
+
+            log.info("Existing site re-linked successfully", {
                 siteId: existingSite.id,
+                domain: normalizedDomain,
+            });
+
+            return res.status(200).json({
+                success: true,
                 status: existingSite.status,
+                siteId: existingSite.id,
+                apiKey: existingSite.apiKey,
+                message: "Site re-linked. Your existing credentials have been restored.",
+                relinked: true,
             });
         }
 
-        // --- Verify token by calling WordPress ---
+        // Verify token by calling WordPress back
         log.info("Verifying registration token with WordPress", { domain: normalizedDomain });
         const verification = await verifyRegistrationToken(normalizedDomain, token);
 
@@ -147,10 +173,9 @@ router.post("/register", async (req, res) => {
             });
         }
 
-        // --- Build publish URL ---
         const publishUrl = `${normalizedDomain}/wp-json/news-automation/v1/publish`;
 
-        // --- Check webhook URL not already taken ---
+        // Check webhook URL not already taken
         const existingWebhook = await prisma.webhook.findUnique({
             where: { url: publishUrl },
         });
@@ -161,15 +186,16 @@ router.post("/register", async (req, res) => {
             });
         }
 
-        // --- Hash the token for audit log (never store plaintext) ---
+        // Generate per-site API key (for settings sync auth)
+        const apiKey    = generateKey(32);
         const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
 
-        // --- Create webhook (active: FALSE until admin approves) ---
+        // Create webhook (active: false — requires admin approval)
         const webhook = await prisma.webhook.create({
             data: {
                 name,
                 url: publishUrl,
-                active: false,                           // Requires admin approval
+                active: false,
                 secret: verification.secret,
                 dailyLimit: verification.dailyLimit,
                 maxDailyLimit: verification.maxDailyLimit,
@@ -179,12 +205,13 @@ router.post("/register", async (req, res) => {
             },
         });
 
-        // --- Create RegisteredSite record ---
+        // Create RegisteredSite record
         const site = await prisma.registeredSite.create({
             data: {
                 domain: normalizedDomain,
                 name,
                 tokenHash,
+                apiKey,
                 status: "pending",
                 webhookId: webhook.id,
             },
@@ -201,6 +228,7 @@ router.post("/register", async (req, res) => {
             success: true,
             status: "pending",
             siteId: site.id,
+            apiKey,                          // Plugin stores this for future auth
             message: "Registration successful. Publishing is paused until an admin approves this site.",
             config: {
                 categories: verification.categories,
@@ -217,9 +245,67 @@ router.post("/register", async (req, res) => {
 });
 
 /**
+ * GET /api/sites/status?siteId=&apiKey=
+ *
+ * Plugin polls this to check approval status.
+ * Returns pending | active (never returns "rejected" — shows "pending" to user).
+ */
+router.get("/status", async (req, res) => {
+    try {
+        await connectDB();
+
+        const { siteId, apiKey } = req.query;
+
+        if (!siteId || !apiKey) {
+            return res.status(400).json({
+                success: false,
+                error: "siteId and apiKey are required.",
+            });
+        }
+
+        const site = await prisma.registeredSite.findUnique({
+            where: { id: siteId },
+            include: {
+                webhook: {
+                    select: {
+                        id: true,
+                        active: true,
+                        dailyLimit: true,
+                        maxDailyLimit: true,
+                        growthRate: true,
+                        categories: true,
+                    },
+                },
+            },
+        });
+
+        // Not found OR wrong apiKey → same response (security: don't reveal site exists)
+        if (!site || site.apiKey !== apiKey) {
+            return res.status(404).json({
+                success: false,
+                error: "Site not found or invalid API key.",
+            });
+        }
+
+        // Map "rejected" → "pending" so site owners don't see rejection
+        const visibleStatus = site.status === "rejected" ? "pending" : site.status;
+
+        return res.json({
+            success: true,
+            status: visibleStatus,
+            approved: site.status === "active",
+            domain: site.domain,
+            webhook: site.status === "active" ? site.webhook : null,
+        });
+    } catch (error) {
+        log.error("Failed to get site status", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * GET /api/sites
- * List all registered sites.
- * Add ?status=pending to filter pending approvals.
+ * List all registered sites. Add ?status=pending to filter.
  */
 router.get("/", async (req, res) => {
     try {
@@ -246,11 +332,7 @@ router.get("/", async (req, res) => {
             orderBy: { registeredAt: "desc" },
         });
 
-        res.json({
-            success: true,
-            count: sites.length,
-            sites,
-        });
+        res.json({ success: true, count: sites.length, sites });
     } catch (error) {
         log.error("Failed to list sites", error);
         res.status(500).json({ success: false, error: error.message });
@@ -259,7 +341,7 @@ router.get("/", async (req, res) => {
 
 /**
  * GET /api/sites/:id
- * Get a single registered site by ID.
+ * Get a single site by ID.
  */
 router.get("/:id", async (req, res) => {
     try {
@@ -292,7 +374,7 @@ router.get("/:id", async (req, res) => {
 
 /**
  * POST /api/sites/:id/approve
- * Admin approves a pending site — activates its webhook and starts publishing.
+ * Admin approves a pending site — activates webhook, starts publishing.
  */
 router.post("/:id/approve", async (req, res) => {
     try {
@@ -311,7 +393,6 @@ router.post("/:id/approve", async (req, res) => {
             return res.status(409).json({ success: false, error: "Site is already active." });
         }
 
-        // Activate webhook + update site status atomically
         await prisma.$transaction([
             prisma.webhook.update({
                 where: { id: site.webhookId },
@@ -343,7 +424,7 @@ router.post("/:id/approve", async (req, res) => {
 
 /**
  * POST /api/sites/:id/reject
- * Admin rejects a site — deactivates webhook and marks as rejected.
+ * Admin rejects a site.
  */
 router.post("/:id/reject", async (req, res) => {
     try {
@@ -369,13 +450,120 @@ router.post("/:id/reject", async (req, res) => {
         ]);
 
         log.info("Site rejected", { siteId: site.id, domain: site.domain });
+        res.json({ success: true, message: `Site "${site.name}" rejected.` });
+    } catch (error) {
+        log.error("Failed to reject site", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * PUT /api/sites/:id/settings
+ *
+ * Plugin syncs settings to scrapper after approval.
+ * Authenticated with per-site API key (X-Plugin-Api-Key header).
+ *
+ * Allows updating: categories, dailyLimit, growthRate
+ * Does NOT allow changing: maxDailyLimit (admin-controlled ceiling)
+ * dailyLimit is auto-capped at maxDailyLimit.
+ */
+router.put("/:id/settings", async (req, res) => {
+    try {
+        await connectDB();
+
+        const apiKey = req.headers["x-plugin-api-key"];
+        const webhookSecret = req.headers["x-webhook-secret"];
+
+        if (!apiKey && !webhookSecret) {
+            return res.status(401).json({
+                success: false,
+                error: "Missing authentication. Provide X-Plugin-Api-Key or X-Webhook-Secret header.",
+            });
+        }
+
+        const site = await prisma.registeredSite.findUnique({
+            where: { id: req.params.id },
+            include: { webhook: true },
+        });
+
+        if (!site) {
+            return res.status(401).json({
+                success: false,
+                error: "Invalid site ID.",
+            });
+        }
+
+        // Authenticate: api key (preferred) or webhook secret (fallback for v1.x upgrades)
+        const authenticated = apiKey
+            ? site.apiKey === apiKey
+            : site.webhook && site.webhook.secret === webhookSecret;
+
+        if (!authenticated) {
+            return res.status(401).json({
+                success: false,
+                error: "Invalid credentials.",
+            });
+        }
+
+        if (site.status !== "active") {
+            return res.status(403).json({
+                success: false,
+                error: "Site is not yet approved. Settings sync is only available after approval.",
+            });
+        }
+
+        const { categories, dailyLimit, growthRate } = req.body;
+
+        // Build update — only include fields that were sent
+        const updatedData = {};
+
+        if (categories !== undefined) {
+            if (!Array.isArray(categories)) {
+                return res.status(400).json({ success: false, error: "categories must be an array." });
+            }
+            updatedData.categories = categories;
+        }
+
+        if (growthRate !== undefined) {
+            updatedData.growthRate = Math.max(0, Math.min(1, parseFloat(growthRate)));
+        }
+
+        if (dailyLimit !== undefined) {
+            const requested = parseInt(dailyLimit);
+            // Cap at the maxDailyLimit set by admin — site owner cannot exceed this
+            updatedData.dailyLimit = Math.min(requested, site.webhook.maxDailyLimit);
+        }
+
+        if (Object.keys(updatedData).length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: "No valid fields provided to update. Allowed: categories, dailyLimit, growthRate.",
+            });
+        }
+
+        const updatedWebhook = await prisma.webhook.update({
+            where: { id: site.webhookId },
+            data: updatedData,
+        });
+
+        log.info("Plugin synced settings", {
+            siteId: site.id,
+            domain: site.domain,
+            updated: updatedData,
+        });
 
         res.json({
             success: true,
-            message: `Site "${site.name}" rejected.`,
+            message: "Settings updated successfully.",
+            webhook: {
+                categories: updatedWebhook.categories,
+                dailyLimit: updatedWebhook.dailyLimit,
+                maxDailyLimit: updatedWebhook.maxDailyLimit,
+                growthRate: updatedWebhook.growthRate,
+            },
         });
     } catch (error) {
-        log.error("Failed to reject site", error);
+        log.error("Failed to sync site settings", error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -396,7 +584,6 @@ router.delete("/:id", async (req, res) => {
             return res.status(404).json({ success: false, error: "Site not found" });
         }
 
-        // Deleting the webhook cascades to RegisteredSite and WebhookPublish
         await prisma.webhook.delete({ where: { id: site.webhookId } });
 
         log.info("Site unregistered", { siteId: site.id, domain: site.domain });
