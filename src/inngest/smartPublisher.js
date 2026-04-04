@@ -226,6 +226,7 @@ async function publishToWebhook(webhook) {
             {
                 title: article.title,
                 textContent: article.textContent,
+                category: articleCategory,  // Pass category for style-based writing
             },
             AI_TIMEOUT_MS
         );

@@ -63,6 +63,7 @@ export const generateArticle = inngest.createFunction(
             const result = await generateArticleContent({
                 title: article.title,
                 textContent: article.textContent,
+                category: article.rssCategory,  // Pass category for style-based writing
             });
 
             if (!result) {
