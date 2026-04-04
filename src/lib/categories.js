@@ -378,9 +378,10 @@ export function normalizeCategory(rawCategory) {
     return CATEGORY_MAP[cleaned];
   }
 
-  // Partial match: check if any map key is contained in the category
+  // Partial match: only for longer keys (5+ chars) to avoid false positives
+  // e.g., 'us' would incorrectly match 'business', 'justice', etc.
   for (const [key, value] of Object.entries(CATEGORY_MAP)) {
-    if (cleaned.includes(key) || key.includes(cleaned)) {
+    if (key.length >= 5 && (cleaned.includes(key) || key.includes(cleaned))) {
       return value;
     }
   }

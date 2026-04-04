@@ -64,7 +64,7 @@ export const fetchRssFeed = inngest.createFunction(
             }
 
             // Normalize RSS categories
-            const { primary: rssCategory, all: normalizedCategories } = normalizeCategories(item.categories || []);
+            const { primary: rssCategory } = normalizeCategories(item.categories || []);
             
             const article = await prisma.article.create({
               data: {

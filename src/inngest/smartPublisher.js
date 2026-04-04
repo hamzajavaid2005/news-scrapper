@@ -414,10 +414,8 @@ async function findNextScrapedArticle(webhookId, category = null) {
     // Category matching using RSS categories (much more accurate than title matching)
     if (category) {
         whereClause.OR = [
-            // Primary: match against normalized RSS category
+            // Primary: match against normalized RSS category (case-insensitive)
             { rssCategory: { equals: category, mode: "insensitive" } },
-            // Secondary: check if category exists in raw RSS categories array
-            { rssCategories: { has: category } },
             // Fallback: title/source name matching (for articles without RSS categories)
             { title: { contains: category, mode: "insensitive" } },
             { source: { name: { contains: category, mode: "insensitive" } } },
