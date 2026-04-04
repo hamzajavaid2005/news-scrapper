@@ -55,7 +55,7 @@ export const sendWebhook = inngest.createFunction(
       const payload = {
         title: generatedArticle.title,
         content: generatedArticle.content,
-        category: generatedArticle.category,
+        category: generatedArticle.category,  // RSS feed category (not AI-generated)
         articleId: generatedArticle.articleId
       };
 

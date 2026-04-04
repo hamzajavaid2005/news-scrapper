@@ -33,7 +33,8 @@ export class RSSDiscovery {
           link: item.link,
           pubDate: item.pubDate ? new Date(item.pubDate) : new Date(),
           content: item.contentSnippet || item.content || '',
-          author: item.creator || item.author || ''
+          author: item.creator || item.author || '',
+          categories: item.categories || []
         }))
       };
     } catch (error) {

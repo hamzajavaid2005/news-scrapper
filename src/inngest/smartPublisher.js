@@ -12,12 +12,12 @@ const AI_TIMEOUT_MS = 30000;
 /**
  * Smart Publisher Function
  *
- * Runs every 30 minutes to distribute article publishing throughout the day.
+ * Runs every 10 minutes to distribute article publishing throughout the day.
  * For each webhook:
  * - Calculates if it's time to publish based on daily quota
- * - Finds scraped articles matching webhook's category config
+ * - Finds scraped articles matching webhook's category config (using RSS categories)
  * - Generates AI content ON-DEMAND (fresh content for each webhook)
- * - Sends to webhook
+ * - Sends to webhook with the RSS feed category (not AI-generated category)
  * - Tracks in WebhookPublish table
  *
  * NOTE: Same article can be sent to multiple webhooks - each gets unique AI content
@@ -173,6 +173,7 @@ async function publishToWebhook(webhook) {
     }
 
     // Find latest SCRAPED article that hasn't been SUCCESSFULLY published to this webhook
+    // Now uses article.rssCategory for accurate matching!
     let article = await findNextScrapedArticle(webhook.id, targetCategory);
 
     // If no article in target category, try other categories
@@ -203,17 +204,22 @@ async function publishToWebhook(webhook) {
         };
     }
 
+    // Use the RSS category from the article (NOT AI-generated)
+    const articleCategory = article.rssCategory || 'Uncategorized';
+
     log.ai(
         "generating",
         `On-demand AI for: ${article.title?.substring(0, 40)}...`,
         {
             articleId: article.id,
             webhookName: webhook.name,
+            rssCategory: articleCategory,
         }
     );
 
     // GENERATE AI CONTENT ON-DEMAND with timeout
     // Each webhook gets FRESH AI content (even for same source article)
+    // AI generates title + content only — category comes from RSS feed
     let aiContent;
     try {
         aiContent = await generateWithTimeout(
@@ -238,18 +244,19 @@ async function publishToWebhook(webhook) {
 
     log.ai(
         "generated",
-        `[${aiContent.category}]: ${aiContent.title?.substring(0, 40)}...`,
+        `[${articleCategory}]: ${aiContent.title?.substring(0, 40)}...`,
         {
             articleId: article.id,
             webhookName: webhook.name,
+            rssCategory: articleCategory,
         }
     );
 
-    // Send to webhook
+    // Send to webhook — using RSS category, not AI category
     const sendResult = await sendArticleToWebhook(webhook, {
         title: aiContent.title,
         content: aiContent.content,
-        category: aiContent.category,
+        category: articleCategory,  // RSS feed category
         articleId: article.id,
     });
 
@@ -262,14 +269,13 @@ async function publishToWebhook(webhook) {
     // === SUCCESS PATH ONLY BELOW ===
 
     // Save generated content to GeneratedArticle table
-    // Note: This may overwrite if same article sent to multiple webhooks
-    // That's fine - each webhook got unique AI content at send time
+    // Category comes from RSS feed
     const generatedArticle = await prisma.generatedArticle.upsert({
         where: { articleId: article.id },
         update: {
             title: aiContent.title,
             content: aiContent.content,
-            category: aiContent.category,
+            category: articleCategory,  // RSS category
             status: "generated",
             generatedAt: new Date(),
         },
@@ -277,7 +283,7 @@ async function publishToWebhook(webhook) {
             articleId: article.id,
             title: aiContent.title,
             content: aiContent.content,
-            category: aiContent.category,
+            category: articleCategory,  // RSS category
             status: "generated",
             generatedAt: new Date(),
         },
@@ -288,7 +294,7 @@ async function publishToWebhook(webhook) {
         data: {
             webhookId: webhook.id,
             generatedArticleId: generatedArticle.id,
-            category: aiContent.category,
+            category: articleCategory,  // RSS category
             status: "success",
         },
     });
@@ -303,7 +309,7 @@ async function publishToWebhook(webhook) {
         webhook.name,
         `Published: ${aiContent.title?.substring(0, 40)}...`,
         {
-            category: aiContent.category,
+            category: articleCategory,
             articleId: article.id,
         }
     );
@@ -315,7 +321,7 @@ async function publishToWebhook(webhook) {
         articleId: article.id,
         generatedArticleId: generatedArticle.id,
         articleTitle: aiContent.title,
-        category: aiContent.category,
+        category: articleCategory,
     };
 }
 
@@ -373,17 +379,20 @@ function calculateDailyQuota(webhook) {
  * Find the next SCRAPED article to publish to a webhook
  * - Must be status 'scraped'
  * - Must not have been SUCCESSFULLY sent to this webhook before
- * - Optionally filter by webhook's categories
+ * - Optionally filter by webhook's categories using article.rssCategory
  * - Order by latest first (scrapedAt DESC)
  *
  * NOTE: Same article CAN be sent to different webhooks - each gets fresh AI content
+ * 
+ * CATEGORY MATCHING: Uses article.rssCategory (from RSS feed) for accurate matching.
+ * Falls back to rssCategories array and title/source name if rssCategory is null.
  */
 async function findNextScrapedArticle(webhookId, category = null) {
     // Get IDs of articles already SUCCESSFULLY sent to this webhook
     const sentArticles = await prisma.webhookPublish.findMany({
         where: {
             webhookId,
-            status: "success", // FIX: Only exclude successful publishes
+            status: "success", // Only exclude successful publishes
         },
         select: { generatedArticle: { select: { articleId: true } } },
     });
@@ -401,10 +410,14 @@ async function findNextScrapedArticle(webhookId, category = null) {
         }),
     };
 
-    // If category filter, try to match by source name or title keywords
-    // (Since AI category isn't generated yet, we do best-effort matching)
+    // Category matching using RSS categories (much more accurate than title matching)
     if (category) {
         whereClause.OR = [
+            // Primary: match against normalized RSS category
+            { rssCategory: { equals: category, mode: "insensitive" } },
+            // Secondary: check if category exists in raw RSS categories array
+            { rssCategories: { has: category } },
+            // Fallback: title/source name matching (for articles without RSS categories)
             { title: { contains: category, mode: "insensitive" } },
             { source: { name: { contains: category, mode: "insensitive" } } },
         ];
@@ -427,7 +440,7 @@ async function sendArticleToWebhook(webhook, article) {
         const payload = {
             title: article.title,
             content: article.content,
-            category: article.category,
+            category: article.category,     // RSS feed category
             articleId: article.articleId,
         };
 

@@ -9,7 +9,9 @@ const getTimestamp = () =>
 /**
  * Generate AI article from scraped content
  * Triggered when an article is successfully scraped
- * OPTIMIZED: Reduced from 6 steps to 3 steps
+ * 
+ * NOTE: Category comes from RSS feed (article.rssCategory), NOT from AI.
+ * AI only generates title + content.
  */
 export const generateArticle = inngest.createFunction(
     {
@@ -51,6 +53,7 @@ export const generateArticle = inngest.createFunction(
         }
 
         // Step 2: Generate AI content (external API call - keep separate for retry isolation)
+        // AI only generates title + content — category comes from RSS feed
         const generated = await step.run("generate-content", async () => {
             log.ai("generate", `Generating: ${title?.substring(0, 50)}...`, {
                 articleId,
@@ -69,14 +72,17 @@ export const generateArticle = inngest.createFunction(
             return result;
         });
 
-        // Step 3: Save to database
+        // Use the RSS category from the original article
+        const rssCategory = article.rssCategory || 'Uncategorized';
+
+        // Step 3: Save to database with RSS category
         const savedGenerated = await step.run("save-generated", async () => {
             const saved = await prisma.generatedArticle.upsert({
                 where: { articleId },
                 update: {
                     title: generated.title,
                     content: generated.content,
-                    category: generated.category,
+                    category: rssCategory,  // RSS feed category
                     status: "generated",
                     generatedAt: new Date(),
                 },
@@ -84,7 +90,7 @@ export const generateArticle = inngest.createFunction(
                     articleId,
                     title: generated.title,
                     content: generated.content,
-                    category: generated.category,
+                    category: rssCategory,  // RSS feed category
                     status: "generated",
                     generatedAt: new Date(),
                 },
@@ -92,29 +98,29 @@ export const generateArticle = inngest.createFunction(
 
             log.ai(
                 "generated",
-                `Generated [${generated.category}]: ${generated.title?.substring(0, 40)}...`,
+                `Generated [${rssCategory}]: ${generated.title?.substring(0, 40)}...`,
                 {
                     articleId,
                     generatedId: saved.id,
-                    category: generated.category,
+                    category: rssCategory,
                 }
             );
 
             return saved;
         });
 
-        // Note: Webhook delivery is handled by smartPublisher (runs every 30 min)
+        // Note: Webhook delivery is handled by smartPublisher (runs every 10 min)
         // This allows rate-limited, category-rotated publishing per webhook config
         logger.info(
             `✅ [${getTimestamp()}] Article queued for smart publishing: ${generated.title?.substring(0, 40)}...`
         );
 
         return {
-            message: `AI successfully rewrote article as "${generated.title?.substring(0, 40)}..." in category [${generated.category}]. Queued for smart publishing.`,
+            message: `AI successfully rewrote article as "${generated.title?.substring(0, 40)}..." in category [${rssCategory}]. Queued for smart publishing.`,
             status: "success",
             articleId,
             generatedArticleId: savedGenerated.id,
-            category: generated.category,
+            category: rssCategory,
             generatedTitle: generated.title,
             nextStep: "smartPublisher",
         };

@@ -31,11 +31,13 @@ model Article {
   textContent  String?
   byline       String?
   siteName     String?
-  status       String   @default("pending") // pending, scraped, failed
-  errorMessage String?
-  discoveredAt DateTime @default(now())
-  scrapedAt    DateTime?
-  embedding    Unsupported("vector(1536)")?
+  status        String   @default("pending") // pending, scraped, failed
+  errorMessage  String?
+  rssCategories String[] @default([])         // Raw categories from RSS feed
+  rssCategory   String?                       // Primary normalized category from RSS
+  discoveredAt  DateTime @default(now())
+  scrapedAt     DateTime?
+  embedding     Unsupported("vector(1536)")?
   
   sourceId     String
   source       Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)

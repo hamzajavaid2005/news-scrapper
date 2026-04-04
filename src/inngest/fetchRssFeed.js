@@ -1,6 +1,7 @@
 import { inngest } from './client.js';
 import { prisma, connectDB } from '../prisma.js';
 import { RSSDiscovery } from '../discovery.js';
+import { normalizeCategories } from '../lib/categories.js';
 
 const getTimestamp = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
 
@@ -61,6 +62,9 @@ export const fetchRssFeed = inngest.createFunction(
               logger.info(`[${getTimestamp()}] ⏭️ Article already exists (race): ${item.title?.substring(0, 40)}...`);
               continue;
             }
+
+            // Normalize RSS categories
+            const { primary: rssCategory, all: normalizedCategories } = normalizeCategories(item.categories || []);
             
             const article = await prisma.article.create({
               data: {
@@ -70,6 +74,8 @@ export const fetchRssFeed = inngest.createFunction(
                 excerpt: item.content ?? '',
                 byline: item.author ?? '',
                 status: 'pending',
+                rssCategories: item.categories || [],
+                rssCategory: rssCategory,
                 discoveredAt: item.pubDate ? new Date(item.pubDate) : new Date()
               }
             });
@@ -77,7 +83,8 @@ export const fetchRssFeed = inngest.createFunction(
             createdArticles.push({
               articleId: article.id,
               url: article.url,
-              title: article.title
+              title: article.title,
+              rssCategory: rssCategory
             });
             
             logger.info(`[${getTimestamp()}] ✓ Created pending: ${article.title?.substring(0, 40)}...`);
